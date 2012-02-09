@@ -21,6 +21,7 @@ Tests For Compute
 """
 from copy import copy
 import datetime
+import sys
 import time
 from webob import exc
 
@@ -205,7 +206,7 @@ class ComputeTestCase(BaseTestCase):
 
         called = {'fault_added': False}
 
-        def did_it_add_fault(_ctxt, _inst_uuid, _e):
+        def did_it_add_fault(*args):
             called['fault_added'] = True
 
         self.stubs.Set(self.compute, 'add_instance_fault_from_exc',
@@ -552,7 +553,7 @@ class ComputeTestCase(BaseTestCase):
         instance = db.instance_get_by_uuid(self.context, instance['uuid'])
 
         self.assertEqual(instance['power_state'], power_state.NOSTATE)
-        self.assertRaises(exception.Error,
+        self.assertRaises(exception.Invalid,
                           self.compute.set_admin_password,
                           self.context,
                           instance['uuid'])
@@ -584,7 +585,7 @@ class ComputeTestCase(BaseTestCase):
 
         #error raised from the driver should not reveal internal information
         #so a new error is raised
-        self.assertRaises(exception.Error,
+        self.assertRaises(exception.Invalid,
                           self.compute.set_admin_password,
                           self.context, instance_uuid)
 
@@ -873,7 +874,7 @@ class ComputeTestCase(BaseTestCase):
         """Ensure failure when running an instance that already exists"""
         instance = self._create_fake_instance()
         self.compute.run_instance(self.context, instance['uuid'])
-        self.assertRaises(exception.Error,
+        self.assertRaises(exception.Invalid,
                           self.compute.run_instance,
                           self.context,
                           instance['uuid'])
@@ -1461,13 +1462,67 @@ class ComputeTestCase(BaseTestCase):
         self.assertEqual(power_state.NOSTATE, instances[0]['power_state'])
 
     def test_add_instance_fault(self):
+        exc_info = None
+        instance_uuid = str(utils.gen_uuid())
+
+        def fake_db_fault_create(ctxt, values):
+            self.assertTrue(values['details'])
+            del values['details']
+
+            expected = {
+                'code': 500,
+                'message': 'NotImplementedError',
+                'instance_uuid': instance_uuid,
+            }
+            self.assertEquals(expected, values)
+
+        try:
+            raise NotImplementedError()
+        except:
+            exc_info = sys.exc_info()
+
+        self.stubs.Set(nova.db, 'instance_fault_create', fake_db_fault_create)
+
+        ctxt = context.get_admin_context()
+        self.compute.add_instance_fault_from_exc(ctxt, instance_uuid,
+                                                 NotImplementedError(),
+                                                 exc_info)
+
+    def test_add_instance_fault_user_error(self):
+        exc_info = None
+        instance_uuid = str(utils.gen_uuid())
+
+        def fake_db_fault_create(ctxt, values):
+
+            expected = {
+                'code': 400,
+                'message': 'Invalid',
+                'details': 'fake details',
+                'instance_uuid': instance_uuid,
+            }
+            self.assertEquals(expected, values)
+
+        user_exc = exception.Invalid('fake details', code=400)
+
+        try:
+            raise user_exc
+        except:
+            exc_info = sys.exc_info()
+
+        self.stubs.Set(nova.db, 'instance_fault_create', fake_db_fault_create)
+
+        ctxt = context.get_admin_context()
+        self.compute.add_instance_fault_from_exc(ctxt, instance_uuid,
+            user_exc, exc_info)
+
+    def test_add_instance_fault_no_exc_info(self):
         instance_uuid = str(utils.gen_uuid())
 
         def fake_db_fault_create(ctxt, values):
             expected = {
                 'code': 500,
                 'message': 'NotImplementedError',
-                'details': '',
+                'details': 'test',
                 'instance_uuid': instance_uuid,
             }
             self.assertEquals(expected, values)
@@ -1476,25 +1531,7 @@ class ComputeTestCase(BaseTestCase):
 
         ctxt = context.get_admin_context()
         self.compute.add_instance_fault_from_exc(ctxt, instance_uuid,
-                                                 NotImplementedError())
-
-    def test_add_instance_fault_http_exception(self):
-        instance_uuid = str(utils.gen_uuid())
-
-        def fake_db_fault_create(ctxt, values):
-            expected = {
-                'code': 404,
-                'message': 'HTTPNotFound',
-                'details': 'Error Details',
-                'instance_uuid': instance_uuid,
-            }
-            self.assertEquals(expected, values)
-
-        self.stubs.Set(nova.db, 'instance_fault_create', fake_db_fault_create)
-
-        ctxt = context.get_admin_context()
-        self.compute.add_instance_fault_from_exc(ctxt, instance_uuid,
-                                        exc.HTTPNotFound("Error Details"))
+                                                 NotImplementedError('test'))
 
 
 class ComputeAPITestCase(BaseTestCase):

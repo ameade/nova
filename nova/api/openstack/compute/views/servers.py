@@ -187,9 +187,24 @@ class ViewBuilder(common.ViewBuilder):
         if not fault:
             return None
 
-        return {
+        fault_dict = {
             "code": fault["code"],
             "created": utils.isotime(fault["created_at"]),
             "message": fault["message"],
-            "details": fault["details"],
         }
+
+        details = None
+
+        is_admin = False
+        try:
+            is_admin = request.context.is_admin
+        except AttributeError as e:
+            pass
+
+        if is_admin or fault['code'] != 500:
+            details = fault["details"]
+
+        if details:
+            fault_dict['details'] = details
+
+        return fault_dict
