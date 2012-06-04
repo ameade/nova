@@ -22,6 +22,7 @@ from nova.api.openstack.volume import volumes
 from nova import flags
 from nova import test
 from nova.tests.api.openstack import fakes
+from nova import utils
 from nova.volume import api as volume_api
 
 
@@ -90,6 +91,7 @@ class VolumeApiTest(test.TestCase):
                                  'created_at': datetime.datetime(1, 1, 1,
                                                                 1, 1, 1),
                                  'size': 1}]}
+        self.maxDiff = None
         self.assertEqual(res_dict, expected)
 
     def test_volume_list_detail(self):
@@ -114,7 +116,7 @@ class VolumeApiTest(test.TestCase):
 
     def test_volume_show(self):
         req = fakes.HTTPRequest.blank('/v1/volumes/1')
-        res_dict = self.controller.show(req, 1)
+        res_dict = self.controller.show(req, '1')
         expected = {'volume': {'status': 'fakestatus',
                                'display_description': 'displaydesc',
                                'availability_zone': 'fakeaz',
@@ -139,7 +141,7 @@ class VolumeApiTest(test.TestCase):
         self.stubs.Set(volume_api.API, 'get', stub_volume_get)
 
         req = fakes.HTTPRequest.blank('/v1/volumes/1')
-        res_dict = self.controller.show(req, 1)
+        res_dict = self.controller.show(req, '1')
         expected = {'volume': {'status': 'fakestatus',
                                'display_description': 'displaydesc',
                                'availability_zone': 'fakeaz',
@@ -213,7 +215,7 @@ class VolumeSerializerTest(test.TestCase):
             status='vol_status',
             size=1024,
             availability_zone='vol_availability',
-            created_at=datetime.datetime.now(),
+            created_at=utils.utcnow(),
             attachments=[dict(
                     id='vol_id',
                     volume_id='vol_id',
@@ -242,7 +244,7 @@ class VolumeSerializerTest(test.TestCase):
                 status='vol1_status',
                 size=1024,
                 availability_zone='vol1_availability',
-                created_at=datetime.datetime.now(),
+                created_at=utils.utcnow(),
                 attachments=[dict(
                         id='vol1_id',
                         volume_id='vol1_id',
@@ -262,7 +264,7 @@ class VolumeSerializerTest(test.TestCase):
                 status='vol2_status',
                 size=1024,
                 availability_zone='vol2_availability',
-                created_at=datetime.datetime.now(),
+                created_at=utils.utcnow(),
                 attachments=[dict(
                         id='vol2_id',
                         volume_id='vol2_id',

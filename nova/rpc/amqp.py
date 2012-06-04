@@ -26,6 +26,7 @@ AMQP, but is deprecated and predates this code.
 """
 
 import inspect
+import logging
 import sys
 import uuid
 
@@ -33,9 +34,6 @@ from eventlet import greenpool
 from eventlet import pools
 from eventlet import semaphore
 
-from nova import context
-from nova import exception
-from nova import log as logging
 from nova.openstack.common import excutils
 from nova.openstack.common import local
 import nova.rpc.common as rpc_common
@@ -76,13 +74,14 @@ def get_connection_pool(conf, connection_cls):
 
 class ConnectionContext(rpc_common.Connection):
     """The class that is actually returned to the caller of
-    create_connection().  This is a essentially a wrapper around
-    Connection that supports 'with' and can return a new Connection or
-    one from a pool.  It will also catch when an instance of this class
-    is to be deleted so that we can return Connections to the pool on
-    exceptions and so forth without making the caller be responsible for
-    catching all exceptions and making sure to return a connection to
-    the pool.
+    create_connection().  This is essentially a wrapper around
+    Connection that supports 'with'.  It can also return a new
+    Connection, or one from a pool.  The function will also catch
+    when an instance of this class is to be deleted.  With that
+    we can return Connections to the pool on exceptions and so
+    forth without making the caller be responsible for catching
+    them.  If possible the function makes sure to return a
+    connection to the pool.
     """
 
     def __init__(self, conf, connection_pool, pooled=True, server_params=None):
@@ -133,6 +132,9 @@ class ConnectionContext(rpc_common.Connection):
     def create_consumer(self, topic, proxy, fanout=False):
         self.connection.create_consumer(topic, proxy, fanout)
 
+    def create_worker(self, topic, proxy, pool_name):
+        self.connection.create_worker(topic, proxy, pool_name)
+
     def consume_in_thread(self):
         self.connection.consume_in_thread()
 
@@ -141,7 +143,7 @@ class ConnectionContext(rpc_common.Connection):
         if self.connection:
             return getattr(self.connection, key)
         else:
-            raise exception.InvalidRPCConnectionReuse()
+            raise rpc_common.InvalidRPCConnectionReuse()
 
 
 def msg_reply(conf, msg_id, connection_pool, reply=None, failure=None,
@@ -166,12 +168,18 @@ def msg_reply(conf, msg_id, connection_pool, reply=None, failure=None,
         conn.direct_send(msg_id, msg)
 
 
-class RpcContext(context.RequestContext):
+class RpcContext(rpc_common.CommonRpcContext):
     """Context that supports replying to a rpc.call"""
-    def __init__(self, *args, **kwargs):
+    def __init__(self, **kwargs):
         self.msg_id = kwargs.pop('msg_id', None)
         self.conf = kwargs.pop('conf')
-        super(RpcContext, self).__init__(*args, **kwargs)
+        super(RpcContext, self).__init__(**kwargs)
+
+    def deepcopy(self):
+        values = self.to_dict()
+        values['conf'] = self.conf
+        values['msg_id'] = self.msg_id
+        return self.__class__(**values)
 
     def reply(self, reply=None, failure=None, ending=False,
               connection_pool=None):
@@ -243,24 +251,26 @@ class ProxyCallback(object):
         ctxt = unpack_context(self.conf, message_data)
         method = message_data.get('method')
         args = message_data.get('args', {})
+        version = message_data.get('version', None)
         if not method:
             LOG.warn(_('no method for message: %s') % message_data)
             ctxt.reply(_('No method for message: %s') % message_data,
                        connection_pool=self.connection_pool)
             return
-        self.pool.spawn_n(self._process_data, ctxt, method, args)
+        self.pool.spawn_n(self._process_data, ctxt, version, method, args)
 
-    @exception.wrap_exception()
-    def _process_data(self, ctxt, method, args):
-        """Thread that magically looks for a method on the proxy
-        object and calls it.
+    def _process_data(self, ctxt, version, method, args):
+        """Process a message in a new thread.
+
+        If the proxy object we have has a dispatch method
+        (see rpc.dispatcher.RpcDispatcher), pass it the version,
+        method, and args and let it dispatch as appropriate.  If not, use
+        the old behavior of magically calling the specified method on the
+        proxy we have here.
         """
         ctxt.update_store()
         try:
-            node_func = getattr(self.proxy, str(method))
-            node_args = dict((str(k), v) for k, v in args.iteritems())
-            # NOTE(vish): magic is fun!
-            rval = node_func(context=ctxt, **node_args)
+            rval = self.proxy.dispatch(ctxt, version, method, **args)
             # Check if the result was a generator
             if inspect.isgenerator(rval):
                 for x in rval:

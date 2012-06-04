@@ -17,6 +17,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+"""
+A remote procedure call (rpc) abstraction.
+
+For some wrappers that add message versioning to rpc, see:
+    rpc.dispatcher
+    rpc.proxy
+"""
+
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
 
@@ -34,10 +42,16 @@ rpc_opts = [
     cfg.IntOpt('rpc_response_timeout',
                default=60,
                help='Seconds to wait for a response from call or multicall'),
-    cfg.IntOpt('allowed_rpc_exception_modules',
+    cfg.ListOpt('allowed_rpc_exception_modules',
                default=['nova.exception'],
                help='Modules of exceptions that are permitted to be recreated'
                     'upon receiving exception data from an rpc call.'),
+    cfg.StrOpt('control_exchange',
+               default='nova',
+               help='AMQP exchange to connect to if using RabbitMQ or Qpid'),
+    cfg.BoolOpt('fake_rabbit',
+                default=False,
+                help='If passed, use a fake RabbitMQ provider'),
     ]
 
 _CONF = None
@@ -210,6 +224,11 @@ def fanout_cast_to_server(context, server_params, topic, msg):
     """
     return _get_impl().fanout_cast_to_server(_CONF, context, server_params,
                                              topic, msg)
+
+
+def queue_get_for(context, topic, host):
+    """Get a queue name for a given topic + host."""
+    return '%s.%s' % (topic, host)
 
 
 _RPCIMPL = None

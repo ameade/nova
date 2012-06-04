@@ -15,15 +15,19 @@
 
 import json
 
-import webob
 from lxml import etree
+import webob
 
-from nova.api.openstack import wsgi
 from nova.api.openstack.compute.contrib import keypairs
+from nova.api.openstack import wsgi
 from nova import db
 from nova import exception
+from nova import quota
 from nova import test
 from nova.tests.api.openstack import fakes
+
+
+QUOTAS = quota.QUOTAS
 
 
 def fake_keypair(name):
@@ -118,6 +122,21 @@ class KeypairsTest(test.TestCase):
         res_dict = json.loads(res.body)
         self.assertEqual(res.status_int, 400)
 
+    def test_keypair_create_quota_limit(self):
+
+        def fake_quotas_count(self, context, resource, *args, **kwargs):
+            return 100
+
+        self.stubs.Set(QUOTAS, "count", fake_quotas_count)
+
+        req = webob.Request.blank('/v2/fake/os-keypairs')
+        req.method = 'POST'
+        req.headers['Content-Type'] = 'application/json'
+        body = {'keypair': {'name': 'foo'}}
+        req.body = json.dumps(body)
+        res = req.get_response(fakes.wsgi_app())
+        self.assertEqual(res.status_int, 413)
+
     def test_keypair_import(self):
         body = {
             'keypair': {
@@ -144,6 +163,55 @@ class KeypairsTest(test.TestCase):
         res_dict = json.loads(res.body)
         self.assertTrue(len(res_dict['keypair']['fingerprint']) > 0)
         self.assertFalse('private_key' in res_dict['keypair'])
+
+    def test_keypair_import_quota_limit(self):
+
+        def fake_quotas_count(self, context, resource, *args, **kwargs):
+            return 100
+
+        self.stubs.Set(QUOTAS, "count", fake_quotas_count)
+
+        body = {
+            'keypair': {
+                'name': 'create_test',
+                'public_key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDBYIznA'
+                              'x9D7118Q1VKGpXy2HDiKyUTM8XcUuhQpo0srqb9rboUp4'
+                              'a9NmCwpWpeElDLuva707GOUnfaBAvHBwsRXyxHJjRaI6Y'
+                              'Qj2oLJwqvaSaWUbyT1vtryRqy6J3TecN0WINY71f4uymi'
+                              'MZP0wby4bKBcYnac8KiCIlvkEl0ETjkOGUq8OyWRmn7lj'
+                              'j5SESEUdBP0JnuTFKddWTU/wD6wydeJaUhBTqOlHn0kX1'
+                              'GyqoNTE1UEhcM5ZRWgfUZfTjVyDF2kGj3vJLCJtJ8LoGc'
+                              'j7YaN4uPg1rBle+izwE/tLonRrds+cev8p6krSSrxWOwB'
+                              'bHkXa6OciiJDvkRzJXzf',
+            },
+        }
+
+        req = webob.Request.blank('/v2/fake/os-keypairs')
+        req.method = 'POST'
+        req.body = json.dumps(body)
+        req.headers['Content-Type'] = 'application/json'
+        res = req.get_response(fakes.wsgi_app())
+        self.assertEqual(res.status_int, 413)
+
+    def test_keypair_create_quota_limit(self):
+
+        def fake_quotas_count(self, context, resource, *args, **kwargs):
+            return 100
+
+        self.stubs.Set(QUOTAS, "count", fake_quotas_count)
+
+        body = {
+            'keypair': {
+                'name': 'create_test',
+            },
+        }
+
+        req = webob.Request.blank('/v2/fake/os-keypairs')
+        req.method = 'POST'
+        req.body = json.dumps(body)
+        req.headers['Content-Type'] = 'application/json'
+        res = req.get_response(fakes.wsgi_app())
+        self.assertEqual(res.status_int, 413)
 
     def test_keypair_create_duplicate(self):
         self.stubs.Set(db, "key_pair_get", db_key_pair_get)

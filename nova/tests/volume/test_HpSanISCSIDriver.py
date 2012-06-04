@@ -13,8 +13,8 @@
 #    under the License.
 from nova import exception
 from nova import log as logging
-from nova.volume import san
 from nova import test
+from nova.volume import san
 
 LOG = logging.getLogger(__name__)
 
@@ -208,5 +208,5 @@ class HpSanISCSITestCase(test.TestCase):
     def test_cliq_error(self):
         try:
             self.driver._cliq_run_xml("testError", {})
-        except exception.Error:
+        except exception.NovaException:
             pass

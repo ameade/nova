@@ -17,20 +17,19 @@
 
 import datetime
 
+from glance import client as glance_client
 import routes
 import webob
 import webob.dec
 import webob.request
 
-from glance import client as glance_client
-
 from nova.api import auth as api_auth
 from nova.api import openstack as openstack_api
-from nova.api.openstack import compute
 from nova.api.openstack import auth
+from nova.api.openstack import compute
 from nova.api.openstack.compute import limits
-from nova.api.openstack import urlmap
 from nova.api.openstack.compute import versions
+from nova.api.openstack import urlmap
 from nova.api.openstack import wsgi as os_wsgi
 import nova.auth.manager as auth_manager
 from nova.compute import instance_types
@@ -39,10 +38,15 @@ from nova import context
 from nova.db.sqlalchemy import models
 from nova import exception as exc
 import nova.image.fake
+from nova.openstack.common import jsonutils
+from nova import quota
 from nova.tests import fake_network
 from nova.tests.glance import stubs as glance_stubs
 from nova import utils
 from nova import wsgi
+
+
+QUOTAS = quota.QUOTAS
 
 
 FAKE_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -77,23 +81,20 @@ def fake_wsgi(self, req):
     return self.application
 
 
-def wsgi_app(inner_app_v2=None, fake_auth=True, fake_auth_context=None,
+def wsgi_app(inner_app_v2=None, fake_auth_context=None,
         use_no_auth=False, ext_mgr=None):
     if not inner_app_v2:
         inner_app_v2 = compute.APIRouter(ext_mgr)
 
-    if fake_auth:
+    if use_no_auth:
+        api_v2 = openstack_api.FaultWrapper(auth.NoAuthMiddleware(
+              limits.RateLimitingMiddleware(inner_app_v2)))
+    else:
         if fake_auth_context is not None:
             ctxt = fake_auth_context
         else:
             ctxt = context.RequestContext('fake', 'fake', auth_token=True)
         api_v2 = openstack_api.FaultWrapper(api_auth.InjectContext(ctxt,
-              limits.RateLimitingMiddleware(inner_app_v2)))
-    elif use_no_auth:
-        api_v2 = openstack_api.FaultWrapper(auth.NoAuthMiddleware(
-              limits.RateLimitingMiddleware(inner_app_v2)))
-    else:
-        api_v2 = openstack_api.FaultWrapper(auth.AuthMiddleware(
               limits.RateLimitingMiddleware(inner_app_v2)))
 
     mapper = urlmap.URLMap()
@@ -131,16 +132,6 @@ def stub_out_image_service(stubs):
         lambda: nova.image.fake.FakeImageService())
 
 
-def stub_out_auth(stubs):
-    def fake_auth_init(self, app):
-        self.application = app
-
-    stubs.Set(auth.AuthMiddleware,
-        '__init__', fake_auth_init)
-    stubs.Set(auth.AuthMiddleware,
-        '__call__', fake_wsgi)
-
-
 def stub_out_rate_limiting(stubs):
     def fake_rate_init(self, app):
         super(limits.RateLimitingMiddleware, self).__init__(app)
@@ -154,9 +145,19 @@ def stub_out_rate_limiting(stubs):
 
 
 def stub_out_instance_quota(stubs, allowed):
-    def fake_allowed_instances(context, max_count, instance_type):
-        return allowed
-    stubs.Set(nova.quota, 'allowed_instances', fake_allowed_instances)
+    def fake_reserve(context, **deltas):
+        instances = deltas.pop('instances', 0)
+        if instances > allowed:
+            raise exc.OverQuota(overs=['instances'], quotas=dict(
+                    instances=allowed,
+                    cores=10000,
+                    ram=10000 * 1024,
+                    ), usages=dict(
+                    instances=dict(in_use=0, reserved=0),
+                    cores=dict(in_use=0, reserved=0),
+                    ram=dict(in_use=0, reserved=0),
+                    ))
+    stubs.Set(QUOTAS, 'reserve', fake_reserve)
 
 
 def stub_out_networking(stubs):
@@ -477,7 +478,7 @@ def create_info_cache(nw_cache):
         return {"info_cache": {"network_info": nw_cache}}
 
     if not isinstance(nw_cache, basestring):
-        nw_cache = utils.dumps(nw_cache)
+        nw_cache = jsonutils.dumps(nw_cache)
 
     return {"info_cache": {"network_info": nw_cache}}
 
@@ -605,7 +606,7 @@ def stub_volume(id, **kwargs):
         'host': 'fakehost',
         'size': 1,
         'availability_zone': 'fakeaz',
-        'instance': {'uuid': 'fakeuuid'},
+        'instance_uuid': 'fakeuuid',
         'mountpoint': '/',
         'status': 'fakestatus',
         'attach_status': 'attached',
@@ -624,7 +625,7 @@ def stub_volume(id, **kwargs):
 
 def stub_volume_create(self, context, size, name, description, snapshot,
                        **param):
-    vol = stub_volume(1)
+    vol = stub_volume('1')
     vol['size'] = size
     vol['display_name'] = name
     vol['display_description'] = description
@@ -653,4 +654,4 @@ def stub_volume_get_notfound(self, context, volume_id):
 
 
 def stub_volume_get_all(self, context, search_opts=None):
-    return [stub_volume_get(self, context, 1)]
+    return [stub_volume_get(self, context, '1')]

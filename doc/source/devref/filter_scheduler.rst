@@ -150,7 +150,7 @@ So in the end file nova.conf should contain lines like these:
 
 ::
 
-    --scheduler_driver=nova.scheduler.distributed_scheduler.FilterScheduler
+    --scheduler_driver=nova.scheduler.FilterScheduler
     --scheduler_available_filters=nova.scheduler.filters.standard_filters
     --scheduler_available_filters=myfilter.MyFilter
     --scheduler_default_filters=RamFilter,ComputeFilter,MyFilter
@@ -225,11 +225,16 @@ The line with this description looks the following way:
 **function_name_weight**.
 
 As for default cost function, it would be: `compute_fill_first_cost_fn_weight`,
-and by default it is 1.0.
+and by default it is -1.0.
 
 ::
 
-    --compute_fill_first_cost_fn_weight=1.0
+    --compute_fill_first_cost_fn_weight=-1.0
+
+Negative function's weight means that the more free RAM Compute Node has, the
+better it is. Nova tries to spread instances as much as possible over the
+Compute Nodes. Positive weight here would mean that Nova would fill up a single
+Compute Node first.
 
 Filter Scheduler finds local list of acceptable hosts by repeated filtering and
 weighing. Each time it chooses a host, it virtually consumes resources on it,

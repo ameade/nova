@@ -27,12 +27,15 @@ quantum_opts = [
     cfg.StrOpt('quantum_connection_host',
                default='127.0.0.1',
                help='HOST for connecting to quantum'),
-    cfg.StrOpt('quantum_connection_port',
-               default='9696',
+    cfg.IntOpt('quantum_connection_port',
+               default=9696,
                help='PORT for connecting to quantum'),
     cfg.StrOpt('quantum_default_tenant_id',
                default="default",
                help='Default tenant id when creating quantum networks'),
+    cfg.IntOpt('quantum_request_timeout',
+               default=20,
+               help='Maximum amount of time to wait for quantum request'),
     ]
 
 FLAGS = flags.FLAGS
@@ -53,9 +56,10 @@ class QuantumClientConnection(object):
             self.client = client
         else:
             self.client = quantum_client.Client(FLAGS.quantum_connection_host,
-                                            FLAGS.quantum_connection_port,
-                                            format="json",
-                                            logger=LOG)
+                                        FLAGS.quantum_connection_port,
+                                        timeout=FLAGS.quantum_request_timeout,
+                                        format="json",
+                                        logger=LOG)
 
     def create_network(self, tenant_id, network_name, **kwargs):
         """Create network using specified name, return Quantum

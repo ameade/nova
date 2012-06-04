@@ -166,7 +166,7 @@ class FlatNetworkTestCase(test.TestCase):
             self.assertDictMatch(nw, check)
 
             check = {'broadcast': '192.168.%d.255' % nid,
-                     'dhcp_server': '192.168.%d.1' % nid,
+                     'dhcp_server': '192.168.1.1',
                      'dns': ['192.168.%d.3' % nid, '192.168.%d.4' % nid],
                      'gateway': '192.168.%d.1' % nid,
                      'gateway_v6': 'fe80::def',
@@ -174,7 +174,7 @@ class FlatNetworkTestCase(test.TestCase):
                      'ips': 'DONTCARE',
                      'label': 'test%d' % nid,
                      'mac': 'DE:AD:BE:EF:00:%02x' % nid,
-                     'rxtx_cap': 0,
+                     'rxtx_cap': 30,
                      'vif_uuid':
                         '00000000-0000-0000-0000-00000000000000%02d' % nid,
                      'should_create_vlan': False,
@@ -268,7 +268,7 @@ class FlatNetworkTestCase(test.TestCase):
 
         self.network.validate_networks(self.context, requested_networks)
 
-    def test_add_fixed_ip_instance_without_vpn_requested_networks(self):
+    def test_add_fixed_ip_instance_using_id_without_vpn(self):
         self.mox.StubOutWithMock(db, 'network_get')
         self.mox.StubOutWithMock(db, 'network_update')
         self.mox.StubOutWithMock(db, 'fixed_ip_associate_pool')
@@ -300,6 +300,39 @@ class FlatNetworkTestCase(test.TestCase):
         self.mox.ReplayAll()
         self.network.add_fixed_ip_to_instance(self.context, 1, HOST,
                                               networks[0]['id'])
+
+    def test_add_fixed_ip_instance_using_uuid_without_vpn(self):
+        self.mox.StubOutWithMock(db, 'network_get_by_uuid')
+        self.mox.StubOutWithMock(db, 'network_update')
+        self.mox.StubOutWithMock(db, 'fixed_ip_associate_pool')
+        self.mox.StubOutWithMock(db, 'instance_get')
+        self.mox.StubOutWithMock(db,
+                              'virtual_interface_get_by_instance_and_network')
+        self.mox.StubOutWithMock(db, 'fixed_ip_update')
+
+        db.fixed_ip_update(mox.IgnoreArg(),
+                           mox.IgnoreArg(),
+                           mox.IgnoreArg())
+        db.virtual_interface_get_by_instance_and_network(mox.IgnoreArg(),
+                mox.IgnoreArg(), mox.IgnoreArg()).AndReturn({'id': 0})
+
+        db.instance_get(mox.IgnoreArg(),
+                        mox.IgnoreArg()).AndReturn({'security_groups':
+                                                             [{'id': 0}]})
+        db.instance_get(self.context,
+                        1).AndReturn({'display_name': HOST,
+                                      'uuid': 'test-00001'})
+        db.instance_get(mox.IgnoreArg(),
+                        mox.IgnoreArg()).AndReturn({'availability_zone': ''})
+        db.fixed_ip_associate_pool(mox.IgnoreArg(),
+                                   mox.IgnoreArg(),
+                                   mox.IgnoreArg()).AndReturn('192.168.0.101')
+        db.network_get_by_uuid(mox.IgnoreArg(),
+                               mox.IgnoreArg()).AndReturn(networks[0])
+        db.network_update(mox.IgnoreArg(), mox.IgnoreArg(), mox.IgnoreArg())
+        self.mox.ReplayAll()
+        self.network.add_fixed_ip_to_instance(self.context, 1, HOST,
+                                              networks[0]['uuid'])
 
     def test_mini_dns_driver(self):
         zone1 = "example.org"
@@ -551,26 +584,12 @@ class VlanNetworkTestCase(test.TestCase):
         ctxt = context.RequestContext('testuser', 'testproject',
                                       is_admin=False)
 
-        def fake1(*args, **kwargs):
-            return {'address': '10.0.0.1'}
+        def fake_allocate_address(*args, **kwargs):
+            return {'address': '10.0.0.1', 'project_id': ctxt.project_id}
 
-        def fake2(*args, **kwargs):
-            return 25
+        self.stubs.Set(self.network.db, 'floating_ip_allocate_address',
+                       fake_allocate_address)
 
-        def fake3(*args, **kwargs):
-            return 0
-
-        self.stubs.Set(self.network.db, 'floating_ip_allocate_address', fake1)
-
-        # this time should raise
-        self.stubs.Set(self.network.db, 'floating_ip_count_by_project', fake2)
-        self.assertRaises(exception.QuotaError,
-                          self.network.allocate_floating_ip,
-                          ctxt,
-                          ctxt.project_id)
-
-        # this time should not
-        self.stubs.Set(self.network.db, 'floating_ip_count_by_project', fake3)
         self.network.allocate_floating_ip(ctxt, ctxt.project_id)
 
     def test_deallocate_floating_ip(self):
@@ -584,7 +603,8 @@ class VlanNetworkTestCase(test.TestCase):
             return {'address': '10.0.0.1', 'fixed_ip_id': 1}
 
         def fake3(*args, **kwargs):
-            return {'address': '10.0.0.1', 'fixed_ip_id': None}
+            return {'address': '10.0.0.1', 'fixed_ip_id': None,
+                    'project_id': ctxt.project_id}
 
         self.stubs.Set(self.network.db, 'floating_ip_deallocate', fake1)
         self.stubs.Set(self.network, '_floating_ip_owned_by_project', fake1)
@@ -715,11 +735,24 @@ class VlanNetworkTestCase(test.TestCase):
         self.stubs.Set(self.network.db, 'fixed_ip_get', fixed_ip_get)
 
         self.mox.StubOutWithMock(self.network.l3driver, 'add_floating_ip')
+        self.flags(public_interface=False)
         self.network.l3driver.add_floating_ip('fakefloat',
                                               'fakefixed',
                                               'fakeiface')
         self.mox.ReplayAll()
         self.network.init_host_floating_ips()
+        self.mox.UnsetStubs()
+        self.mox.VerifyAll()
+
+        self.mox.StubOutWithMock(self.network.l3driver, 'add_floating_ip')
+        self.flags(public_interface='fooiface')
+        self.network.l3driver.add_floating_ip('fakefloat',
+                                              'fakefixed',
+                                              'fooiface')
+        self.mox.ReplayAll()
+        self.network.init_host_floating_ips()
+        self.mox.UnsetStubs()
+        self.mox.VerifyAll()
 
     def test_disassociate_floating_ip(self):
         ctxt = context.RequestContext('testuser', 'testproject',
@@ -740,7 +773,8 @@ class VlanNetworkTestCase(test.TestCase):
             return {'address': '10.0.0.1',
                     'pool': 'nova',
                     'interface': 'eth0',
-                    'fixed_ip_id': 1}
+                    'fixed_ip_id': 1,
+                    'project_id': ctxt.project_id}
 
         # fixed ip with remote host
         def fake4(*args, **kwargs):

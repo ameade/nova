@@ -17,18 +17,18 @@
 
 """Tests For miscellaneous util methods used with compute."""
 
+from nova.compute import instance_types
+from nova.compute import utils as compute_utils
+from nova import context
 from nova import db
 from nova import flags
-from nova import context
-from nova import test
-from nova import log as logging
-from nova import utils
 import nova.image.fake
-from nova.compute import utils as compute_utils
-from nova.compute import instance_types
+from nova import log as logging
 from nova.notifier import test_notifier
 from nova.openstack.common import importutils
+from nova import test
 from nova.tests import fake_network
+from nova import utils
 
 
 LOG = logging.getLogger(__name__)
@@ -83,6 +83,12 @@ class UsageInfoTestCase(test.TestCase):
         """Ensure 'exists' notification generates appropriate usage data."""
         instance_id = self._create_instance()
         instance = db.instance_get(self.context, instance_id)
+        # Set some system metadata
+        sys_metadata = {'image_md_key1': 'val1',
+                        'image_md_key2': 'val2',
+                        'other_data': 'meow'}
+        db.instance_system_metadata_update(self.context, instance['uuid'],
+                sys_metadata, False)
         compute_utils.notify_usage_exists(self.context, instance)
         self.assertEquals(len(test_notifier.NOTIFICATIONS), 1)
         msg = test_notifier.NOTIFICATIONS[0]
@@ -98,9 +104,11 @@ class UsageInfoTestCase(test.TestCase):
         for attr in ('display_name', 'created_at', 'launched_at',
                      'state', 'state_description',
                      'bandwidth', 'audit_period_beginning',
-                     'audit_period_ending'):
+                     'audit_period_ending', 'image_meta'):
             self.assertTrue(attr in payload,
                             msg="Key %s not in payload" % attr)
+        self.assertEquals(payload['image_meta'],
+                {'md_key1': 'val1', 'md_key2': 'val2'})
         image_ref_url = "%s/images/1" % utils.generate_glance_url()
         self.assertEquals(payload['image_ref_url'], image_ref_url)
         self.compute.terminate_instance(self.context, instance['uuid'])

@@ -19,15 +19,15 @@ import functools
 import mox
 import StringIO
 
-from nova import flags
-from nova import utils
-from nova import test
 from nova.compute import power_state
-from nova.tests import fake_utils
 from nova import exception
+from nova import flags
+from nova.openstack.common import jsonutils
+from nova import test
+from nova.tests import fake_utils
 
-from nova.virt.baremetal import proxy
 from nova.virt.baremetal import dom
+from nova.virt.baremetal import proxy
 
 FLAGS = flags.FLAGS
 
@@ -95,8 +95,8 @@ class DomainReadWriteTestCase(test.TestCase):
 
     def assertJSONEquals(self, x, y):
         """Check if two json strings represent the equivalent Python object"""
-        self.assertEquals(utils.loads(x), utils.loads(y))
-        return utils.loads(x) == utils.loads(y)
+        self.assertEquals(jsonutils.loads(x), jsonutils.loads(y))
+        return jsonutils.loads(x) == jsonutils.loads(y)
 
     def test_write_domain(self):
         """Write the domain to file"""

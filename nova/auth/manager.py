@@ -28,6 +28,7 @@ import string  # pylint: disable=W0402
 import uuid
 import zipfile
 
+from nova.auth import signer
 from nova import context
 from nova import crypto
 from nova import db
@@ -37,7 +38,6 @@ from nova import log as logging
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
 from nova import utils
-from nova.auth import signer
 
 
 auth_opts = [
@@ -447,7 +447,7 @@ class AuthManager(object):
         """
         if role == 'projectmanager':
             if not project:
-                raise exception.Error(_("Must specify project"))
+                raise exception.NovaException(_("Must specify project"))
             return self.is_project_manager(user, project)
 
         global_role = self._has_role(User.safe_id(user),

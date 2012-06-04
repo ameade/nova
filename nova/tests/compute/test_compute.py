@@ -28,11 +28,12 @@ import mox
 import nova
 import nova.common.policy
 from nova import compute
-from nova.compute import api as compute_api
 from nova.compute import aggregate_states
+from nova.compute import api as compute_api
 from nova.compute import instance_types
 from nova.compute import manager as compute_manager
 from nova.compute import power_state
+from nova.compute import rpcapi as compute_rpcapi
 from nova.compute import task_states
 from nova.compute import vm_states
 from nova import context
@@ -44,6 +45,7 @@ from nova import log as logging
 from nova.notifier import test_notifier
 from nova.openstack.common import importutils
 import nova.policy
+from nova import quota
 from nova import rpc
 from nova.rpc import common as rpc_common
 from nova.scheduler import driver as scheduler_driver
@@ -53,6 +55,7 @@ from nova import utils
 import nova.volume
 
 
+QUOTAS = quota.QUOTAS
 LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 flags.DECLARE('stub_network', 'nova.compute.manager')
@@ -60,6 +63,7 @@ flags.DECLARE('live_migration_retry_count', 'nova.compute.manager')
 flags.DECLARE('additional_compute_capabilities', 'nova.compute.manager')
 
 
+FAKE_IMAGE_REF = 'fake-image-ref'
 orig_rpc_call = rpc.call
 orig_rpc_cast = rpc.cast
 
@@ -69,13 +73,14 @@ def rpc_call_wrapper(context, topic, msg, do_cast=True):
     if (topic == FLAGS.scheduler_topic and
         msg['method'] == 'run_instance'):
         request_spec = msg['args']['request_spec']
+        reservations = msg['args'].get('reservations')
         scheduler = scheduler_driver.Scheduler
         num_instances = request_spec.get('num_instances', 1)
         instances = []
         for num in xrange(num_instances):
             request_spec['instance_properties']['launch_index'] = num
             instance = scheduler().create_instance_db_entry(
-                    context, request_spec)
+                    context, request_spec, reservations)
             encoded = scheduler_driver.encode_instance(instance)
             instances.append(encoded)
         return instances
@@ -114,8 +119,10 @@ class BaseTestCase(test.TestCase):
         test_notifier.NOTIFICATIONS = []
 
         def fake_show(meh, context, id):
-            return {'id': 1, 'min_disk': None, 'min_ram': None,
-                    'properties': {'kernel_id': 1, 'ramdisk_id': 1}}
+            return {'id': id, 'min_disk': None, 'min_ram': None,
+                    'properties': {'kernel_id': 'fake_kernel_id',
+                                   'ramdisk_id': 'fake_ramdisk_id',
+                                   'something_else': 'meow'}}
 
         self.stubs.Set(fake_image._FakeImageService, 'show', fake_show)
         self.stubs.Set(rpc, 'call', rpc_call_wrapper)
@@ -134,7 +141,7 @@ class BaseTestCase(test.TestCase):
 
         inst = {}
         inst['vm_state'] = vm_states.ACTIVE
-        inst['image_ref'] = 1
+        inst['image_ref'] = FAKE_IMAGE_REF
         inst['reservation_id'] = 'r-fakeres'
         inst['launch_time'] = '10'
         inst['user_id'] = self.user_id
@@ -144,8 +151,10 @@ class BaseTestCase(test.TestCase):
         inst['instance_type_id'] = type_id
         inst['ami_launch_index'] = 0
         inst['memory_mb'] = 0
+        inst['vcpus'] = 0
         inst['root_gb'] = 0
         inst['ephemeral_gb'] = 0
+        inst['architecture'] = 'x86_64'
         inst.update(params)
         return db.instance_create(self.context, inst)
 
@@ -486,9 +495,11 @@ class ComputeTestCase(BaseTestCase):
         """Ensure instance can be rebuilt"""
         instance = self._create_fake_instance()
         instance_uuid = instance['uuid']
+        image_ref = instance['image_ref']
 
         self.compute.run_instance(self.context, instance_uuid)
-        self.compute.rebuild_instance(self.context, instance_uuid)
+        self.compute.rebuild_instance(self.context, instance_uuid,
+                image_ref, image_ref)
         self.compute.terminate_instance(self.context, instance_uuid)
 
     def test_rebuild_launch_time(self):
@@ -498,10 +509,12 @@ class ComputeTestCase(BaseTestCase):
         utils.set_time_override(old_time)
         instance = self._create_fake_instance()
         instance_uuid = instance['uuid']
+        image_ref = instance['image_ref']
 
         self.compute.run_instance(self.context, instance_uuid)
         utils.set_time_override(cur_time)
-        self.compute.rebuild_instance(self.context, instance_uuid)
+        self.compute.rebuild_instance(self.context, instance_uuid,
+                image_ref, image_ref)
         instance = db.instance_get_by_uuid(self.context, instance_uuid)
         self.assertEquals(cur_time, instance['launched_at'])
         self.compute.terminate_instance(self.context, instance_uuid)
@@ -867,7 +880,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertTrue('created_at' in payload)
         self.assertTrue('launched_at' in payload)
         self.assertTrue(payload['launched_at'])
-        image_ref_url = "%s/images/1" % utils.generate_glance_url()
+        image_ref_url = utils.generate_image_url(FAKE_IMAGE_REF)
         self.assertEquals(payload['image_ref_url'], image_ref_url)
         self.compute.terminate_instance(self.context, instance_uuid)
 
@@ -907,7 +920,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertTrue('launched_at' in payload)
         self.assertTrue('deleted_at' in payload)
         self.assertEqual(payload['deleted_at'], str(cur_time))
-        image_ref_url = "%s/images/1" % utils.generate_glance_url()
+        image_ref_url = utils.generate_image_url(FAKE_IMAGE_REF)
         self.assertEquals(payload['image_ref_url'], image_ref_url)
 
     def test_run_instance_existing(self):
@@ -1071,20 +1084,29 @@ class ComputeTestCase(BaseTestCase):
         instance = db.instance_get_by_uuid(self.context, instance_uuid)
 
         image_ref = instance["image_ref"]
+        new_image_ref = image_ref + '-new_image_ref'
+        db.instance_update(self.context, instance_uuid,
+                {'image_ref': new_image_ref})
+
         password = "new_password"
+
         self.compute._rebuild_instance(self.context, instance_uuid,
-                                        dict(image_ref=image_ref,
-                                             new_pass=password))
+                image_ref, new_image_ref, dict(new_pass=password))
 
         instance = db.instance_get_by_uuid(self.context, instance_uuid)
+
+        image_ref_url = utils.generate_image_url(image_ref)
+        new_image_ref_url = utils.generate_image_url(new_image_ref)
 
         self.assertEquals(len(test_notifier.NOTIFICATIONS), 3)
         msg = test_notifier.NOTIFICATIONS[0]
         self.assertEquals(msg['event_type'],
                           'compute.instance.exists')
+        self.assertEquals(msg['payload']['image_ref_url'], image_ref_url)
         msg = test_notifier.NOTIFICATIONS[1]
         self.assertEquals(msg['event_type'],
                           'compute.instance.rebuild.start')
+        self.assertEquals(msg['payload']['image_ref_url'], new_image_ref_url)
         msg = test_notifier.NOTIFICATIONS[2]
         self.assertEquals(msg['event_type'],
                           'compute.instance.rebuild.end')
@@ -1100,8 +1122,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertTrue('created_at' in payload)
         self.assertTrue('launched_at' in payload)
         self.assertEqual(payload['launched_at'], str(cur_time))
-        image_ref_url = "%s/images/1" % utils.generate_glance_url()
-        self.assertEquals(payload['image_ref_url'], image_ref_url)
+        self.assertEquals(payload['image_ref_url'], new_image_ref_url)
         self.compute.terminate_instance(self.context, instance_uuid)
 
     def test_finish_resize_instance_notification(self):
@@ -1150,7 +1171,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertTrue('created_at' in payload)
         self.assertTrue('launched_at' in payload)
         self.assertEqual(payload['launched_at'], str(cur_time))
-        image_ref_url = "%s/images/1" % utils.generate_glance_url()
+        image_ref_url = utils.generate_image_url(FAKE_IMAGE_REF)
         self.assertEquals(payload['image_ref_url'], image_ref_url)
         self.compute.terminate_instance(context, instance_uuid)
 
@@ -1195,7 +1216,7 @@ class ComputeTestCase(BaseTestCase):
         self.assertTrue('display_name' in payload)
         self.assertTrue('created_at' in payload)
         self.assertTrue('launched_at' in payload)
-        image_ref_url = "%s/images/1" % utils.generate_glance_url()
+        image_ref_url = utils.generate_image_url(FAKE_IMAGE_REF)
         self.assertEquals(payload['image_ref_url'], image_ref_url)
         self.compute.terminate_instance(context, instance_uuid)
 
@@ -1405,7 +1426,7 @@ class ComputeTestCase(BaseTestCase):
         inst_ref = self._create_fake_instance({'host': 'dummy'})
 
         c = context.get_admin_context()
-        topic = db.queue_get_for(c, FLAGS.compute_topic, inst_ref['host'])
+        topic = rpc.queue_get_for(c, FLAGS.compute_topic, inst_ref['host'])
 
         # creating volume testdata
         volume_id = db.volume_create(c, {'size': 1})['id']
@@ -1426,8 +1447,9 @@ class ComputeTestCase(BaseTestCase):
                  {"method": "pre_live_migration",
                   "args": {'instance_id': inst_ref['id'],
                            'block_migration': True,
-                           'disk': None}
-                 }).AndRaise(rpc.common.RemoteError('', '', ''))
+                           'disk': None},
+                  "version": compute_rpcapi.ComputeAPI.RPC_API_VERSION
+                 }, None).AndRaise(rpc.common.RemoteError('', '', ''))
 
         # mocks for rollback
         rpc.call(c, 'network', {'method': 'setup_networks_on_host',
@@ -1460,14 +1482,16 @@ class ComputeTestCase(BaseTestCase):
         instance_id = instance['id']
         c = context.get_admin_context()
         inst_ref = db.instance_get(c, instance_id)
-        topic = db.queue_get_for(c, FLAGS.compute_topic, inst_ref['host'])
+        topic = rpc.queue_get_for(c, FLAGS.compute_topic, inst_ref['host'])
 
         # create
         self.mox.StubOutWithMock(rpc, 'call')
-        rpc.call(c, topic, {"method": "pre_live_migration",
-                            "args": {'instance_id': instance_id,
-                                     'block_migration': False,
-                                     'disk': None}})
+        rpc.call(c, topic,
+                {"method": "pre_live_migration",
+                 "args": {'instance_id': instance_id,
+                          'block_migration': False,
+                          'disk': None},
+                 "version": compute_rpcapi.ComputeAPI.RPC_API_VERSION}, None)
 
         # start test
         self.mox.ReplayAll()
@@ -1502,9 +1526,10 @@ class ComputeTestCase(BaseTestCase):
         self.mox.StubOutWithMock(self.compute.driver, 'unfilter_instance')
         self.compute.driver.unfilter_instance(i_ref, [])
         self.mox.StubOutWithMock(rpc, 'call')
-        rpc.call(c, db.queue_get_for(c, FLAGS.compute_topic, dest),
+        rpc.call(c, rpc.queue_get_for(c, FLAGS.compute_topic, dest),
             {"method": "post_live_migration_at_destination",
-             "args": {'instance_id': i_ref['id'], 'block_migration': False}})
+             "args": {'instance_id': i_ref['id'], 'block_migration': False},
+             "version": compute_rpcapi.ComputeAPI.RPC_API_VERSION}, None)
         self.mox.StubOutWithMock(self.compute.driver, 'unplug_vifs')
         self.compute.driver.unplug_vifs(i_ref, [])
         rpc.call(c, 'network', {'method': 'setup_networks_on_host',
@@ -1646,7 +1671,7 @@ class ComputeTestCase(BaseTestCase):
         self.compute._last_host_check = 0
         self.mox.ReplayAll()
 
-        self.compute._report_driver_status(context)
+        self.compute._report_driver_status(context.get_admin_context())
         caps = self.compute.last_capabilities
         all_caps = dict(test1=1024, test2='foo', test3='xyzzy',
                         test4=True, nothertest='bar')
@@ -1787,6 +1812,181 @@ class ComputeTestCase(BaseTestCase):
         self.assertEqual(call_info['get_by_uuid'], 3)
         self.assertEqual(call_info['get_nw_info'], 4)
 
+    def test_poll_unconfirmed_resizes(self):
+        instances = [{'uuid': 'fake_uuid1', 'vm_state': vm_states.ACTIVE,
+                      'task_state': task_states.RESIZE_VERIFY},
+                     {'uuid': 'noexist'},
+                     {'uuid': 'fake_uuid2', 'vm_state': vm_states.ERROR,
+                      'task_state': task_states.RESIZE_VERIFY},
+                     {'uuid': 'fake_uuid3', 'vm_state': vm_states.ACTIVE,
+                      'task_state': task_states.REBOOTING},
+                     {'uuid': 'fake_uuid4', 'vm_state': vm_states.ACTIVE,
+                      'task_state': task_states.RESIZE_VERIFY},
+                     {'uuid': 'fake_uuid5', 'vm_state': vm_states.ACTIVE,
+                      'task_state': task_states.RESIZE_VERIFY}]
+        expected_migration_status = {'fake_uuid1': 'confirmed',
+                                     'noexist': 'error',
+                                     'fake_uuid2': 'error',
+                                     'fake_uuid3': 'error',
+                                     'fake_uuid4': None,
+                                     'fake_uuid5': 'confirmed'}
+        migrations = []
+        for i, instance in enumerate(instances, start=1):
+            migrations.append({'id': i,
+                               'instance_uuid': instance['uuid'],
+                               'status': None})
+
+        def fake_instance_get_by_uuid(context, instance_uuid):
+            # raise InstanceNotFound exception for uuid 'noexist'
+            if instance_uuid == 'noexist':
+                raise exception.InstanceNotFound(instance_id=instance_uuid)
+            for instance in instances:
+                if instance['uuid'] == instance_uuid:
+                    return instance
+
+        def fake_migration_get_all_unconfirmed(context, resize_confirm_window):
+            return migrations
+
+        def fake_migration_update(context, migration_id, values):
+            for migration in migrations:
+                if migration['id'] == migration_id and 'status' in values:
+                    migration['status'] = values['status']
+
+        def fake_confirm_resize(context, instance):
+            # raise exception for 'fake_uuid4' to check migration status
+            # does not get set to 'error' on confirm_resize failure.
+            if instance['uuid'] == 'fake_uuid4':
+                raise test.TestingException
+            for migration in migrations:
+                if migration['instance_uuid'] == instance['uuid']:
+                    migration['status'] = 'confirmed'
+
+        self.stubs.Set(db, 'instance_get_by_uuid',
+                fake_instance_get_by_uuid)
+        self.stubs.Set(db, 'migration_get_all_unconfirmed',
+                fake_migration_get_all_unconfirmed)
+        self.stubs.Set(db, 'migration_update',
+                fake_migration_update)
+        self.stubs.Set(self.compute.compute_api, 'confirm_resize',
+                fake_confirm_resize)
+
+        def fetch_instance_migration_status(instance_uuid):
+            for migration in migrations:
+                if migration['instance_uuid'] == instance_uuid:
+                    return migration['status']
+
+        self.flags(resize_confirm_window=60)
+        ctxt = context.get_admin_context()
+
+        self.compute._poll_unconfirmed_resizes(ctxt)
+
+        for uuid, status in expected_migration_status.iteritems():
+            self.assertEqual(status, fetch_instance_migration_status(uuid))
+
+    def test_instance_build_timeout_disabled(self):
+        self.flags(instance_build_timeout=0)
+        ctxt = context.get_admin_context()
+        called = {'get_all': False, 'set_error_state': 0}
+        created_at = utils.utcnow() + datetime.timedelta(seconds=-60)
+
+        def fake_instance_get_all_by_filters(*args, **kwargs):
+            called['get_all'] = True
+            return instances[:]
+
+        self.stubs.Set(db, 'instance_get_all_by_filters',
+                fake_instance_get_all_by_filters)
+
+        def fake_set_instance_error_state(_ctxt, instance_uuid, **kwargs):
+            called['set_error_state'] += 1
+
+        self.stubs.Set(self.compute, '_set_instance_error_state',
+                fake_set_instance_error_state)
+
+        instance_map = {}
+        instances = []
+        for x in xrange(5):
+            uuid = 'fake-uuid-%s' % x
+            instance_map[uuid] = {'uuid': uuid, 'host': FLAGS.host,
+                    'vm_state': vm_states.BUILDING,
+                    'created_at': created_at}
+            instances.append(instance_map[uuid])
+
+        self.compute._check_instance_build_time(ctxt)
+        self.assertFalse(called['get_all'])
+        self.assertEqual(called['set_error_state'], 0)
+
+    def test_instance_build_timeout(self):
+        self.flags(instance_build_timeout=30)
+        ctxt = context.get_admin_context()
+        called = {'get_all': False, 'set_error_state': 0}
+        created_at = utils.utcnow() + datetime.timedelta(seconds=-60)
+
+        def fake_instance_get_all_by_filters(*args, **kwargs):
+            called['get_all'] = True
+            return instances[:]
+
+        self.stubs.Set(db, 'instance_get_all_by_filters',
+                fake_instance_get_all_by_filters)
+
+        def fake_set_instance_error_state(_ctxt, instance_uuid, **kwargs):
+            called['set_error_state'] += 1
+
+        self.stubs.Set(self.compute, '_set_instance_error_state',
+                fake_set_instance_error_state)
+
+        instance_map = {}
+        instances = []
+        for x in xrange(5):
+            uuid = 'fake-uuid-%s' % x
+            instance_map[uuid] = {'uuid': uuid, 'host': FLAGS.host,
+                    'vm_state': vm_states.BUILDING,
+                    'created_at': created_at}
+            instances.append(instance_map[uuid])
+
+        self.compute._check_instance_build_time(ctxt)
+        self.assertTrue(called['get_all'])
+        self.assertEqual(called['set_error_state'], 5)
+
+    def test_instance_build_timeout_mixed_instances(self):
+        self.flags(instance_build_timeout=30)
+        ctxt = context.get_admin_context()
+        called = {'get_all': False, 'set_error_state': 0}
+        created_at = utils.utcnow() + datetime.timedelta(seconds=-60)
+
+        def fake_instance_get_all_by_filters(*args, **kwargs):
+            called['get_all'] = True
+            return instances[:]
+
+        self.stubs.Set(db, 'instance_get_all_by_filters',
+                fake_instance_get_all_by_filters)
+
+        def fake_set_instance_error_state(_ctxt, instance_uuid, **kwargs):
+            called['set_error_state'] += 1
+
+        self.stubs.Set(self.compute, '_set_instance_error_state',
+                fake_set_instance_error_state)
+
+        instance_map = {}
+        instances = []
+        #expired instances
+        for x in xrange(4):
+            uuid = 'fake-uuid-%s' % x
+            instance_map[uuid] = {'uuid': uuid, 'host': FLAGS.host,
+                    'vm_state': vm_states.BUILDING,
+                    'created_at': created_at}
+            instances.append(instance_map[uuid])
+
+        #not expired
+        uuid = 'fake-uuid-5'
+        instance_map[uuid] = {'uuid': uuid, 'host': FLAGS.host,
+                'vm_state': vm_states.BUILDING,
+                'created_at': utils.utcnow()}
+        instances.append(instance_map[uuid])
+
+        self.compute._check_instance_build_time(ctxt)
+        self.assertTrue(called['get_all'])
+        self.assertEqual(called['set_error_state'], 4)
+
 
 class ComputeAPITestCase(BaseTestCase):
 
@@ -1802,7 +2002,8 @@ class ComputeAPITestCase(BaseTestCase):
         self.compute_api = compute.API()
         self.fake_image = {
             'id': 1,
-            'properties': {'kernel_id': 1, 'ramdisk_id': 1},
+            'properties': {'kernel_id': 'fake_kernel_id',
+                           'ramdisk_id': 'fake_ramdisk_id'},
         }
 
     def _run_instance(self):
@@ -1899,6 +2100,22 @@ class ComputeAPITestCase(BaseTestCase):
                 self.assertNotEqual(ref[0]['display_name'], None)
             finally:
                 db.instance_destroy(self.context, ref[0]['id'])
+
+    def test_create_instance_sets_system_metadata(self):
+        """Make sure image properties are copied into system metadata."""
+        (ref, resv_id) = self.compute_api.create(
+                self.context,
+                instance_type=instance_types.get_default_instance_type(),
+                image_href=None)
+        try:
+            sys_metadata = db.instance_system_metadata_get(self.context,
+                    ref[0]['uuid'])
+            self.assertEqual(sys_metadata,
+                    {'image_kernel_id': 'fake_kernel_id',
+                     'image_ramdisk_id': 'fake_ramdisk_id',
+                     'image_something_else': 'meow'})
+        finally:
+            db.instance_destroy(self.context, ref[0]['id'])
 
     def test_create_instance_associates_security_groups(self):
         """Make sure create associates security groups"""
@@ -2204,14 +2421,42 @@ class ComputeAPITestCase(BaseTestCase):
 
         instance = db.instance_get_by_uuid(self.context, instance_uuid)
         self.assertEqual(instance['task_state'], None)
+        # Set some image metadata that should get wiped out and reset
+        # as well as some other metadata that should be preserved.
+        db.instance_system_metadata_update(self.context, instance_uuid,
+                {'image_kernel_id': 'old-data',
+                 'image_ramdisk_id': 'old_data',
+                 'image_something_else': 'old-data',
+                 'image_should_remove': 'bye-bye',
+                 'preserved': 'preserve this!'},
+                True)
 
-        image_ref = instance["image_ref"]
+        # Make sure Compute API updates the image_ref before casting to
+        # compute manager.
+        orig_update = self.compute_api.update
+        info = {'image_ref': None}
+
+        def update_wrapper(*args, **kwargs):
+            if 'image_ref' in kwargs:
+                info['image_ref'] = kwargs['image_ref']
+            return orig_update(*args, **kwargs)
+
+        self.stubs.Set(self.compute_api, 'update', update_wrapper)
+
+        image_ref = instance["image_ref"] + '-new_image_ref'
         password = "new_password"
         self.compute_api.rebuild(self.context, instance, image_ref, password)
+        self.assertEqual(info['image_ref'], image_ref)
 
         instance = db.instance_get_by_uuid(self.context, instance_uuid)
         self.assertEqual(instance['vm_state'], vm_states.REBUILDING)
-
+        sys_metadata = db.instance_system_metadata_get(self.context,
+                instance_uuid)
+        self.assertEqual(sys_metadata,
+                {'image_kernel_id': 'fake_kernel_id',
+                 'image_ramdisk_id': 'fake_ramdisk_id',
+                 'image_something_else': 'meow',
+                 'preserved': 'preserve this!'})
         db.instance_destroy(self.context, instance['id'])
 
     def test_reboot_soft(self):
@@ -2572,15 +2817,14 @@ class ComputeAPITestCase(BaseTestCase):
         self.compute.terminate_instance(context, instance['uuid'])
 
     def test_resize_request_spec(self):
-        def _fake_cast(context, args):
-            request_spec = args['args']['request_spec']
-            filter_properties = args['args']['filter_properties']
+        def _fake_cast(context, topic, msg):
+            request_spec = msg['args']['request_spec']
+            filter_properties = msg['args']['filter_properties']
             instance_properties = request_spec['instance_properties']
             self.assertEqual(instance_properties['host'], 'host2')
             self.assertIn('host2', filter_properties['ignore_hosts'])
 
-        self.stubs.Set(self.compute_api, '_cast_scheduler_message',
-                _fake_cast)
+        self.stubs.Set(rpc, 'cast', _fake_cast)
 
         context = self.context.elevated()
         instance = self._create_fake_instance(dict(host='host2'))
@@ -2592,15 +2836,14 @@ class ComputeAPITestCase(BaseTestCase):
             self.compute.terminate_instance(context, instance['uuid'])
 
     def test_resize_request_spec_noavoid(self):
-        def _fake_cast(context, args):
-            request_spec = args['args']['request_spec']
-            filter_properties = args['args']['filter_properties']
+        def _fake_cast(context, topic, msg):
+            request_spec = msg['args']['request_spec']
+            filter_properties = msg['args']['filter_properties']
             instance_properties = request_spec['instance_properties']
             self.assertEqual(instance_properties['host'], 'host2')
             self.assertNotIn('host2', filter_properties['ignore_hosts'])
 
-        self.stubs.Set(self.compute_api, '_cast_scheduler_message',
-                _fake_cast)
+        self.stubs.Set(rpc, 'cast', _fake_cast)
         self.flags(allow_resize_to_same_host=True)
 
         context = self.context.elevated()
@@ -3201,6 +3444,24 @@ class ComputeAPITestCase(BaseTestCase):
 
         db.instance_destroy(self.context, refs[0]['id'])
 
+    def test_instance_architecture(self):
+        """Test the instance architecture"""
+        i_ref = self._create_fake_instance()
+        self.assertEqual(i_ref['architecture'], 'x86_64')
+        db.instance_destroy(self.context, i_ref['id'])
+
+    def test_instance_unknown_architecture(self):
+        """Test if the architecture is unknown."""
+        instance = self._create_fake_instance(
+                        params={'architecture': ''})
+        try:
+            self.compute.run_instance(self.context, instance['uuid'])
+            instances = db.instance_get_all(context.get_admin_context())
+            instance = instances[0]
+            self.assertNotEqual(instance['architecture'], 'Unknown')
+        finally:
+            db.instance_destroy(self.context, instance['id'])
+
     def test_instance_name_template(self):
         """Test the instance_name template"""
         self.flags(instance_name_template='instance-%d')
@@ -3249,26 +3510,24 @@ class ComputeAPITestCase(BaseTestCase):
                              'console_type': fake_console_type,
                              'host': 'fake_console_host',
                              'port': 'fake_console_port',
-                             'internal_access_path': 'fake_access_path',
-                             'access_url': 'fake_console_url'}
+                             'internal_access_path': 'fake_access_path'}
+        fake_connect_info2 = copy.deepcopy(fake_connect_info)
+        fake_connect_info2['access_url'] = 'fake_console_url'
 
         self.mox.StubOutWithMock(rpc, 'call')
 
         rpc_msg1 = {'method': 'get_vnc_console',
                     'args': {'instance_uuid': fake_instance['uuid'],
-                             'console_type': fake_console_type}}
-        # 2nd rpc.call receives almost everything from fake_connect_info
-        # except 'access_url'
-        rpc_msg2_args = dict([(k, v)
-                for k, v in fake_connect_info.items()
-                        if k != 'access_url'])
+                             'console_type': fake_console_type},
+                   'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION}
         rpc_msg2 = {'method': 'authorize_console',
-                    'args': rpc_msg2_args}
+                    'args': fake_connect_info,
+                    'version': '1.0'}
 
         rpc.call(self.context, 'compute.%s' % fake_instance['host'],
-                rpc_msg1).AndReturn(fake_connect_info)
+                rpc_msg1, None).AndReturn(fake_connect_info2)
         rpc.call(self.context, FLAGS.consoleauth_topic,
-                rpc_msg2).AndReturn(None)
+                rpc_msg2, None).AndReturn(None)
 
         self.mox.ReplayAll()
 
@@ -3286,9 +3545,10 @@ class ComputeAPITestCase(BaseTestCase):
 
         rpc_msg = {'method': 'get_console_output',
                    'args': {'instance_uuid': fake_instance['uuid'],
-                            'tail_length': fake_tail_length}}
+                            'tail_length': fake_tail_length},
+                   'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION}
         rpc.call(self.context, 'compute.%s' % fake_instance['host'],
-                rpc_msg).AndReturn(fake_console_output)
+                rpc_msg, None).AndReturn(fake_console_output)
 
         self.mox.ReplayAll()
 
@@ -3360,27 +3620,6 @@ class ComputeAPITestCase(BaseTestCase):
     def test_get_diagnostics(self):
         instance = self._create_fake_instance()
         self.compute_api.get_diagnostics(self.context, instance)
-        self.compute_api.delete(self.context, instance)
-
-    def test_get_actions(self):
-
-        expected = [{'id': 1,
-                    'instance_id': 5,
-                    'action': 'rebuild',
-                    'error': '',
-                    }]
-
-        def fake_get_actions(context, instance):
-            return expected
-
-        self.stubs.Set(nova.db, 'instance_get_actions',
-                       fake_get_actions)
-
-        instance = self._create_fake_instance()
-        context = self.context.elevated()
-        actual = self.compute_api.get_actions(context, instance)
-        self.assertEqual(expected, actual)
-
         self.compute_api.delete(self.context, instance)
 
     def test_inject_file(self):
@@ -3809,7 +4048,7 @@ class ComputeHostAPITestCase(BaseTestCase):
         self.host_api = compute_api.HostAPI()
 
     def _rpc_call_stub(self, call_info):
-        def fake_rpc_call(context, topic, msg):
+        def fake_rpc_call(context, topic, msg, timeout=None):
             call_info['context'] = context
             call_info['topic'] = topic
             call_info['msg'] = msg
@@ -3825,7 +4064,8 @@ class ComputeHostAPITestCase(BaseTestCase):
         self.assertEqual(call_info['topic'], 'compute.fake_host')
         self.assertEqual(call_info['msg'],
                 {'method': 'set_host_enabled',
-                 'args': {'enabled': 'fake_enabled'}})
+                 'args': {'enabled': 'fake_enabled'},
+                 'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION})
 
     def test_host_power_action(self):
         ctxt = context.RequestContext('fake', 'fake')
@@ -3836,7 +4076,8 @@ class ComputeHostAPITestCase(BaseTestCase):
         self.assertEqual(call_info['topic'], 'compute.fake_host')
         self.assertEqual(call_info['msg'],
                 {'method': 'host_power_action',
-                 'args': {'action': 'fake_action'}})
+                 'args': {'action': 'fake_action'},
+                 'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION})
 
     def test_set_host_maintenance(self):
         ctxt = context.RequestContext('fake', 'fake')
@@ -3847,4 +4088,106 @@ class ComputeHostAPITestCase(BaseTestCase):
         self.assertEqual(call_info['topic'], 'compute.fake_host')
         self.assertEqual(call_info['msg'],
                 {'method': 'host_maintenance_mode',
-                 'args': {'host': 'fake_host', 'mode': 'fake_mode'}})
+                 'args': {'host': 'fake_host', 'mode': 'fake_mode'},
+                 'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION})
+
+
+class KeypairAPITestCase(BaseTestCase):
+    def setUp(self):
+        super(KeypairAPITestCase, self).setUp()
+        self.keypair_api = compute_api.KeypairAPI()
+        self.ctxt = context.RequestContext('fake', 'fake')
+        self._keypair_db_call_stubs()
+        self.pub_key = ('ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDLnVkqJu9WVf'
+                        '/5StU3JCrBR2r1s1j8K1tux+5XeSvdqaM8lMFNorzbY5iyoBbR'
+                        'S56gy1jmm43QsMPJsrpfUZKcJpRENSe3OxIIwWXRoiapZe78u/'
+                        'a9xKwj0avFYMcws9Rk9iAB7W4K1nEJbyCPl5lRBoyqeHBqrnnu'
+                        'XWEgGxJCK0Ah6wcOzwlEiVjdf4kxzXrwPHyi7Ea1qvnNXTziF8'
+                        'yYmUlH4C8UXfpTQckwSwpDyxZUc63P8q+vPbs3Q2kw+/7vvkCK'
+                        'HJAXVI+oCiyMMfffoTq16M1xfV58JstgtTqAXG+ZFpicGajREU'
+                        'E/E3hO5MGgcHmyzIrWHKpe1n3oEGuz')
+        self.fingerprint = '4e:48:c6:a0:4a:f9:dd:b5:4c:85:54:5a:af:43:47:5a'
+
+    def _keypair_db_call_stubs(self):
+
+        def db_key_pair_get_all_by_user(self, user_id):
+            return []
+
+        def db_key_pair_create(self, keypair):
+            pass
+
+        def db_key_pair_destroy(context, user_id, name):
+            pass
+
+        self.stubs.Set(db, "key_pair_get_all_by_user",
+                       db_key_pair_get_all_by_user)
+        self.stubs.Set(db, "key_pair_create",
+                       db_key_pair_create)
+        self.stubs.Set(db, "key_pair_destroy",
+                       db_key_pair_destroy)
+
+    def test_create_keypair(self):
+        keypair = self.keypair_api.create_key_pair(self.ctxt,
+                                                   self.ctxt.user_id, 'foo')
+        self.assertEqual('foo', keypair['name'])
+
+    def test_create_keypair_name_too_long(self):
+        self.assertRaises(exception.InvalidKeypair,
+                          self.keypair_api.create_key_pair,
+                          self.ctxt, self.ctxt.user_id, 'x' * 256)
+
+    def test_create_keypair_invalid_chars(self):
+        self.assertRaises(exception.InvalidKeypair,
+                          self.keypair_api.create_key_pair,
+                          self.ctxt, self.ctxt.user_id, '* BAD CHARACTERS! *')
+
+    def test_create_keypair_already_exists(self):
+        def db_key_pair_get(context, user_id, name):
+            pass
+        self.stubs.Set(db, "key_pair_get",
+                       db_key_pair_get)
+        self.assertRaises(exception.KeyPairExists,
+                          self.keypair_api.create_key_pair,
+                          self.ctxt, self.ctxt.user_id, 'foo')
+
+    def test_create_keypair_quota_limit(self):
+        def fake_quotas_count(self, context, resource, *args, **kwargs):
+            return FLAGS.quota_key_pairs
+        self.stubs.Set(QUOTAS, "count", fake_quotas_count)
+        self.assertRaises(exception.KeypairLimitExceeded,
+                          self.keypair_api.create_key_pair,
+                          self.ctxt, self.ctxt.user_id, 'foo')
+
+    def test_import_keypair(self):
+        keypair = self.keypair_api.import_key_pair(self.ctxt,
+                                                   self.ctxt.user_id,
+                                                   'foo',
+                                                   self.pub_key)
+        self.assertEqual('foo', keypair['name'])
+        self.assertEqual(self.fingerprint, keypair['fingerprint'])
+        self.assertEqual(self.pub_key, keypair['public_key'])
+
+    def test_import_keypair_bad_public_key(self):
+        self.assertRaises(exception.InvalidKeypair,
+                          self.keypair_api.import_key_pair,
+                          self.ctxt, self.ctxt.user_id, 'foo', 'bad key data')
+
+    def test_import_keypair_name_too_long(self):
+        self.assertRaises(exception.InvalidKeypair,
+                          self.keypair_api.import_key_pair,
+                          self.ctxt, self.ctxt.user_id, 'x' * 256,
+                          self.pub_key)
+
+    def test_import_keypair_invalid_chars(self):
+        self.assertRaises(exception.InvalidKeypair,
+                          self.keypair_api.import_key_pair,
+                          self.ctxt, self.ctxt.user_id,
+                          '* BAD CHARACTERS! *', self.pub_key)
+
+    def test_import_keypair_quota_limit(self):
+        def fake_quotas_count(self, context, resource, *args, **kwargs):
+            return FLAGS.quota_key_pairs
+        self.stubs.Set(QUOTAS, "count", fake_quotas_count)
+        self.assertRaises(exception.KeypairLimitExceeded,
+                          self.keypair_api.import_key_pair,
+                          self.ctxt, self.ctxt.user_id, 'foo', self.pub_key)

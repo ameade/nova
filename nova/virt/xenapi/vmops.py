@@ -190,7 +190,7 @@ class VMOps(object):
     def confirm_migration(self, migration, instance, network_info):
         name_label = self._get_orig_vm_name_label(instance)
         vm_ref = VMHelper.lookup(self._session, name_label)
-        return self._destroy(instance, vm_ref, network_info, shutdown=False)
+        return self._destroy(instance, vm_ref, network_info)
 
     def finish_revert_migration(self, instance):
         # NOTE(sirp): the original vm was suffixed with '-orig'; find it using
@@ -630,7 +630,7 @@ class VMOps(object):
         finally:
             if template_vm_ref:
                 self._destroy(instance, template_vm_ref,
-                        shutdown=False, destroy_kernel_ramdisk=False)
+                              destroy_kernel_ramdisk=False)
 
         LOG.debug(_("Finished snapshot and upload for VM"),
                   instance=instance)
@@ -800,7 +800,7 @@ class VMOps(object):
         finally:
             if template_vm_ref:
                 self._destroy(instance, template_vm_ref,
-                        shutdown=False, destroy_kernel_ramdisk=False)
+                              destroy_kernel_ramdisk=False)
 
         return vdis
 
@@ -991,7 +991,8 @@ class VMOps(object):
 
     def _shutdown(self, instance, vm_ref, hard=True):
         """Shutdown an instance."""
-        state = self.get_info(instance)['state']
+        vm_rec = self._session.call_xenapi("VM.get_record", vm_ref)
+        state = VMHelper.compile_info(vm_rec)['state']
         if state == power_state.SHUTDOWN:
             LOG.warn(_("VM already halted, skipping shutdown..."),
                      instance=instance)
@@ -1013,17 +1014,12 @@ class VMOps(object):
 
         vbd_refs = self._session.call_xenapi("VM.get_VBDs", vm_ref)
 
-        if len(vbd_refs) == 0:
-            raise Exception(_("Unable to find VBD for VM"))
-        elif len(vbd_refs) == 1:
-            # If we only have one VBD, assume it's the root fs
-            vbd_ref = vbd_refs[0]
-        else:
-            # If we have more than one VBD, swap will be first by convention
-            # with the root fs coming second
-            vbd_ref = vbd_refs[1]
+        for vbd_uuid in vbd_refs:
+            vbd = self._session.call_xenapi("VBD.get_record", vbd_uuid)
+            if vbd["userdevice"] == "0":
+                return vbd["VDI"]
 
-        return self._session.call_xenapi("VBD.get_record", vbd_ref)["VDI"]
+        raise exception.NotFound(_("Unable to find root VBD/VDI for VM"))
 
     def _safe_destroy_vdis(self, vdi_refs):
         """Destroys the requested VDIs, logging any StorageError exceptions."""
@@ -1119,13 +1115,13 @@ class VMOps(object):
         if rescue_vm_ref:
             self._destroy_rescue_instance(rescue_vm_ref, vm_ref)
 
-        return self._destroy(instance, vm_ref, network_info, shutdown=True)
+        return self._destroy(instance, vm_ref, network_info)
 
-    def _destroy(self, instance, vm_ref, network_info=None, shutdown=True,
+    def _destroy(self, instance, vm_ref, network_info=None,
                  destroy_kernel_ramdisk=True):
         """Destroys VM instance by performing:
 
-            1. A shutdown if requested.
+            1. A shutdown
             2. Destroying associated VDIs.
             3. Destroying kernel and ramdisk files (if necessary).
             4. Destroying that actual VM record.
@@ -1136,8 +1132,7 @@ class VMOps(object):
                         instance=instance)
             return
         is_snapshot = VMHelper.is_snapshot(self._session, vm_ref)
-        if shutdown:
-            self._shutdown(instance, vm_ref)
+        self._shutdown(instance, vm_ref)
 
         # Destroy VDIs
         vdi_refs = VMHelper.lookup_vm_vdis(self._session, vm_ref)
@@ -1305,62 +1300,6 @@ class VMOps(object):
             self._session.call_xenapi("VM.start", original_vm_ref, False,
                                       False)
 
-    def poll_unconfirmed_resizes(self, resize_confirm_window):
-        """Poll for unconfirmed resizes.
-
-        Look for any unconfirmed resizes that are older than
-        `resize_confirm_window` and automatically confirm them.  Check
-        all migrations despite exceptions when trying to confirm and
-        yield to other greenthreads on each iteration.
-        """
-        ctxt = nova_context.get_admin_context()
-        migrations = db.migration_get_all_unconfirmed(ctxt,
-            resize_confirm_window)
-
-        if migrations:
-            LOG.info(_("Found %(migration_count)d unconfirmed migrations "
-                    "older than %(confirm_window)d seconds") %
-                     {'migration_count': len(migrations),
-                      'confirm_window': resize_confirm_window})
-
-        def _set_migration_to_error(migration_id, reason, **kwargs):
-            msg = _("Setting migration %(migration_id)s to error: "
-                   "%(reason)s") % locals()
-            LOG.warn(msg, **kwargs)
-            db.migration_update(ctxt, migration_id, {'status': 'error'})
-
-        for migration in migrations:
-            # NOTE(comstud): Yield to other greenthreads.  Putting this
-            # at the top so we make sure to do it on each iteration.
-            greenthread.sleep(0)
-            migration_id = migration['id']
-            instance_uuid = migration['instance_uuid']
-            LOG.info(_("Automatically confirming migration %(migration_id)s "
-                       "for instance %(instance_uuid)s"), locals())
-            try:
-                instance = db.instance_get_by_uuid(ctxt, instance_uuid)
-            except exception.InstanceNotFound:
-                reason = _("Instance %(instance_uuid)s not found")
-                _set_migration_to_error(migration_id, reason % locals())
-                continue
-            if instance['vm_state'] == vm_states.ERROR:
-                reason = _("In ERROR state")
-                _set_migration_to_error(migration_id, reason % locals(),
-                                        instance=instance)
-                continue
-            if instance['task_state'] != task_states.RESIZE_VERIFY:
-                task_state = instance['task_state']
-                reason = _("In %(task_state)s task_state, not RESIZE_VERIFY")
-                _set_migration_to_error(migration_id, reason % locals(),
-                                        instance=instance)
-                continue
-            try:
-                self.compute_api.confirm_resize(ctxt, instance)
-            except Exception, e:
-                msg = _("Error auto-confirming resize: %(e)s. "
-                        "Will retry later.")
-                LOG.error(msg % locals(), instance=instance)
-
     def get_info(self, instance):
         """Return data about VM instance."""
         vm_ref = self._get_vm_opaque_ref(instance)
@@ -1418,6 +1357,70 @@ class VMOps(object):
         return {'host': FLAGS.vncserver_proxyclient_address, 'port': 80,
                 'internal_access_path': path}
 
+    def _vif_xenstore_data(self, vif):
+        """convert a network info vif to injectable instance data"""
+
+        def get_ip(ip):
+            if not ip:
+                return None
+            return ip['address']
+
+        def fixed_ip_dict(ip, subnet):
+            if ip['version'] == 4:
+                netmask = str(subnet.as_netaddr().netmask)
+            else:
+                netmask = subnet.as_netaddr()._prefixlen
+
+            return {'ip': ip['address'],
+                    'enabled': '1',
+                    'netmask': netmask,
+                    'gateway': get_ip(subnet['gateway'])}
+
+        def convert_route(route):
+            return {'route': str(netaddr.IPNetwork(route['cidr']).network),
+                    'netmask': str(netaddr.IPNetwork(route['cidr']).netmask),
+                    'gateway': get_ip(route['gateway'])}
+
+        network = vif['network']
+        v4_subnets = [subnet for subnet in network['subnets']
+                             if subnet['version'] == 4]
+        v6_subnets = [subnet for subnet in network['subnets']
+                             if subnet['version'] == 6]
+
+        # NOTE(tr3buchet): routes and DNS come from all subnets
+        routes = [convert_route(route) for subnet in network['subnets']
+                                       for route in subnet['routes']]
+        dns = [get_ip(ip) for subnet in network['subnets']
+                          for ip in subnet['dns']]
+
+        info_dict = {'label': network['label'],
+                     'mac': vif['address']}
+
+        if v4_subnets:
+            # NOTE(tr3buchet): gateway and broadcast from first subnet
+            #                  primary IP will be from first subnet
+            #                  subnets are generally unordered :(
+            info_dict['gateway'] = get_ip(v4_subnets[0]['gateway'])
+            info_dict['broadcast'] = str(v4_subnets[0].as_netaddr().broadcast)
+            info_dict['ips'] = [fixed_ip_dict(ip, subnet)
+                                for subnet in v4_subnets
+                                for ip in subnet['ips']]
+        if v6_subnets:
+            # NOTE(tr3buchet): gateway from first subnet
+            #                  primary IP will be from first subnet
+            #                  subnets are generally unordered :(
+            info_dict['gateway_v6'] = get_ip(v6_subnets[0]['gateway'])
+            info_dict['ip6s'] = [fixed_ip_dict(ip, subnet)
+                                 for subnet in v6_subnets
+                                 for ip in subnet['ips']]
+        if routes:
+            info_dict['routes'] = routes
+
+        if dns:
+            info_dict['dns'] = dns
+
+        return info_dict
+
     def inject_network_info(self, instance, network_info, vm_ref=None):
         """
         Generate the network info and make calls to place it into the
@@ -1428,11 +1431,13 @@ class VMOps(object):
         vm_ref = vm_ref or self._get_vm_opaque_ref(instance)
         LOG.debug(_("Injecting network info to xenstore"), instance=instance)
 
-        for (network, info) in network_info:
-            location = 'vm-data/networking/%s' % info['mac'].replace(':', '')
-            self._add_to_param_xenstore(vm_ref, location, json.dumps(info))
+        for vif in network_info:
+            xs_data = self._vif_xenstore_data(vif)
+            location = ('vm-data/networking/%s' %
+                        vif['address'].replace(':', ''))
+            self._add_to_param_xenstore(vm_ref, location, json.dumps(xs_data))
             try:
-                self._write_to_xenstore(instance, location, info,
+                self._write_to_xenstore(instance, location, xs_data,
                                         vm_ref=vm_ref)
             except KeyError:
                 # catch KeyError for domid if instance isn't running
@@ -1446,8 +1451,8 @@ class VMOps(object):
         # this function raises if vm_ref is not a vm_opaque_ref
         self._session.call_xenapi("VM.get_record", vm_ref)
 
-        for device, (network, info) in enumerate(network_info):
-            vif_rec = self.vif_driver.plug(instance, network, info,
+        for device, vif in enumerate(network_info):
+            vif_rec = self.vif_driver.plug(instance, vif,
                                            vm_ref=vm_ref, device=device)
             network_ref = vif_rec['network']
             LOG.debug(_('Creating VIF for network %(network_ref)s'),
@@ -1458,13 +1463,13 @@ class VMOps(object):
 
     def plug_vifs(self, instance, network_info):
         """Set up VIF networking on the host."""
-        for device, (network, mapping) in enumerate(network_info):
-            self.vif_driver.plug(instance, network, mapping, device=device)
+        for device, vif in enumerate(network_info):
+            self.vif_driver.plug(instance, vif, device=device)
 
     def unplug_vifs(self, instance, network_info):
         if network_info:
-            for (network, mapping) in network_info:
-                self.vif_driver.unplug(instance, network, mapping)
+            for vif in network_info:
+                self.vif_driver.unplug(instance, vif)
 
     def reset_network(self, instance, vm_ref=None):
         """Calls resetnetwork method in agent."""

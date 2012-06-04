@@ -34,13 +34,13 @@ from nova import block_device
 from nova import compute
 from nova.compute import instance_types
 from nova.compute import vm_states
-from nova import crypto
 from nova import db
 from nova import exception
 from nova import flags
 from nova.image import s3
 from nova import log as logging
 from nova import network
+from nova.openstack.common import excutils
 from nova.openstack.common import importutils
 from nova import quota
 from nova import utils
@@ -51,6 +51,8 @@ FLAGS = flags.FLAGS
 
 LOG = logging.getLogger(__name__)
 
+QUOTAS = quota.QUOTAS
+
 
 def validate_ec2_id(val):
     if not validator.validate_str()(val):
@@ -59,28 +61,6 @@ def validate_ec2_id(val):
         ec2utils.ec2_id_to_id(val)
     except exception.InvalidEc2Id:
         raise exception.InvalidInstanceIDMalformed(val)
-
-
-def _gen_key(context, user_id, key_name):
-    """Generate a key
-
-    This is a module level method because it is slow and we need to defer
-    it into a process pool."""
-    # NOTE(vish): generating key pair is slow so check for legal
-    #             creation before creating key_pair
-    try:
-        db.key_pair_get(context, user_id, key_name)
-        raise exception.KeyPairExists(key_name=key_name)
-    except exception.NotFound:
-        pass
-    private_key, public_key, fingerprint = crypto.generate_key_pair()
-    key = {}
-    key['user_id'] = user_id
-    key['name'] = key_name
-    key['public_key'] = public_key
-    key['fingerprint'] = fingerprint
-    db.key_pair_create(context, key)
-    return {'private_key': private_key, 'fingerprint': fingerprint}
 
 
 # EC2 API can return the following values as documented in the EC2 API
@@ -212,6 +192,7 @@ class CloudController(object):
         self.volume_api = volume.API()
         self.compute_api = compute.API(network_api=self.network_api,
                                        volume_api=self.volume_api)
+        self.keypair_api = compute.api.KeypairAPI()
         self.sgh = importutils.import_object(FLAGS.security_group_handler)
 
     def __str__(self):
@@ -352,7 +333,7 @@ class CloudController(object):
         return True
 
     def describe_key_pairs(self, context, key_name=None, **kwargs):
-        key_pairs = db.key_pair_get_all_by_user(context, context.user_id)
+        key_pairs = self.keypair_api.get_key_pairs(context, context.user_id)
         if not key_name is None:
             key_pairs = [x for x in key_pairs if x['name'] in key_name]
 
@@ -369,47 +350,55 @@ class CloudController(object):
         return {'keySet': result}
 
     def create_key_pair(self, context, key_name, **kwargs):
-        if not re.match('^[a-zA-Z0-9_\- ]+$', str(key_name)):
-            err = _("Value (%s) for KeyName is invalid."
-                    " Content limited to Alphanumeric character, "
-                    "spaces, dashes, and underscore.") % key_name
-            raise exception.EC2APIError(err)
-
-        if len(str(key_name)) > 255:
-            err = _("Value (%s) for Keyname is invalid."
-                    " Length exceeds maximum of 255.") % key_name
-            raise exception.EC2APIError(err)
-
         LOG.audit(_("Create key pair %s"), key_name, context=context)
-        data = _gen_key(context, context.user_id, key_name)
+
+        try:
+            keypair = self.keypair_api.create_key_pair(context,
+                                                       context.user_id,
+                                                       key_name)
+        except exception.KeypairLimitExceeded:
+            msg = _("Quota exceeded, too many key pairs.")
+            raise exception.EC2APIError(msg)
+        except exception.InvalidKeypair:
+            msg = _("Keypair data is invalid")
+            raise exception.EC2APIError(msg)
+        except exception.KeyPairExists:
+            msg = _("Key pair '%s' already exists.") % key_name
+            raise exception.KeyPairExists(msg)
         return {'keyName': key_name,
-                'keyFingerprint': data['fingerprint'],
-                'keyMaterial': data['private_key']}
+                'keyFingerprint': keypair['fingerprint'],
+                'keyMaterial': keypair['private_key']}
         # TODO(vish): when context is no longer an object, pass it here
 
     def import_key_pair(self, context, key_name, public_key_material,
                         **kwargs):
         LOG.audit(_("Import key %s"), key_name, context=context)
-        try:
-            db.key_pair_get(context, context.user_id, key_name)
-            raise exception.KeyPairExists(key_name=key_name)
-        except exception.NotFound:
-            pass
+
         public_key = base64.b64decode(public_key_material)
-        fingerprint = crypto.generate_fingerprint(public_key)
-        key = {}
-        key['user_id'] = context.user_id
-        key['name'] = key_name
-        key['public_key'] = public_key
-        key['fingerprint'] = fingerprint
-        db.key_pair_create(context, key)
+
+        try:
+            keypair = self.keypair_api.import_key_pair(context,
+                                                       context.user_id,
+                                                       key_name,
+                                                       public_key)
+        except exception.KeypairLimitExceeded:
+            msg = _("Quota exceeded, too many key pairs.")
+            raise exception.EC2APIError(msg)
+        except exception.InvalidKeypair:
+            msg = _("Keypair data is invalid")
+            raise exception.EC2APIError(msg)
+        except exception.KeyPairExists:
+            msg = _("Key pair '%s' already exists.") % key_name
+            raise exception.EC2APIError(msg)
+
         return {'keyName': key_name,
-                'keyFingerprint': fingerprint}
+                'keyFingerprint': keypair['fingerprint']}
 
     def delete_key_pair(self, context, key_name, **kwargs):
         LOG.audit(_("Delete key pair %s"), key_name, context=context)
         try:
-            db.key_pair_destroy(context, context.user_id, key_name)
+            self.keypair_api.delete_key_pair(context, context.user_id,
+                                             key_name)
         except exception.NotFound:
             # aws returns true even if the key doesn't exist
             pass
@@ -727,10 +716,11 @@ class CloudController(object):
                     raise exception.EC2APIError(err % values_for_rule)
                 postvalues.append(values_for_rule)
 
-        allowed = quota.allowed_security_group_rules(context,
-                                                   security_group['id'],
-                                                   1)
-        if allowed < 1:
+        count = QUOTAS.count(context, 'security_group_rules',
+                             security_group['id'])
+        try:
+            QUOTAS.limit_check(context, security_group_rules=count + 1)
+        except exception.OverQuota:
             msg = _("Quota exceeded, too many security group rules.")
             raise exception.EC2APIError(msg)
 
@@ -769,18 +759,36 @@ class CloudController(object):
         return source_project_id
 
     def create_security_group(self, context, group_name, group_description):
-        if not re.match('^[a-zA-Z0-9_\- ]+$', str(group_name)):
-            # Some validation to ensure that values match API spec.
-            # - Alphanumeric characters, spaces, dashes, and underscores.
-            # TODO(Daviey): LP: #813685 extend beyond group_name checking, and
-            #  probably create a param validator that can be used elsewhere.
-            err = _("Value (%s) for parameter GroupName is invalid."
-                    " Content limited to Alphanumeric characters, "
-                    "spaces, dashes, and underscores.") % group_name
-            # err not that of master ec2 implementation, as they fail to raise.
-            raise exception.InvalidParameterValue(err=err)
+        if isinstance(group_name, unicode):
+            group_name = group_name.encode('utf-8')
+        # TODO(Daviey): LP: #813685 extend beyond group_name checking, and
+        # probably create a param validator that can be used elsewhere.
+        if FLAGS.ec2_strict_validation:
+            # EC2 specification gives constraints for name and description:
+            # Accepts alphanumeric characters, spaces, dashes, and underscores
+            err = _("Value (%(value)s) for parameter %(param)s is invalid."
+                    " Content limited to Alphanumeric characters,"
+                    " spaces, dashes, and underscores.")
+            if not re.match('^[a-zA-Z0-9_\- ]+$', group_name):
+                raise exception.InvalidParameterValue(
+                    err=err % {"value": group_name,
+                               "param": "GroupName"})
+            if not re.match('^[a-zA-Z0-9_\- ]+$', group_description):
+                raise exception.InvalidParameterValue(
+                    err=err % {"value": group_description,
+                               "param": "GroupDescription"})
+        else:
+            # Amazon accepts more symbols.
+            # So, allow POSIX [:print:] characters.
+            if not re.match(r'^[\x20-\x7E]+$', group_name):
+                err = _("Value (%(value)s) for parameter %(param)s is invalid."
+                        " Content is limited to characters"
+                        " from the [:print:] class.")
+                raise exception.InvalidParameterValue(
+                    err=err % {"value": group_name,
+                               "param": "GroupName"})
 
-        if len(str(group_name)) > 255:
+        if len(group_name) > 255:
             err = _("Value (%s) for parameter GroupName is invalid."
                     " Length exceeds maximum of 255.") % group_name
             raise exception.InvalidParameterValue(err=err)
@@ -791,17 +799,26 @@ class CloudController(object):
             msg = _('group %s already exists')
             raise exception.EC2APIError(msg % group_name)
 
-        if quota.allowed_security_groups(context, 1) < 1:
+        try:
+            reservations = QUOTAS.reserve(context, security_groups=1)
+        except exception.OverQuota:
             msg = _("Quota exceeded, too many security groups.")
             raise exception.EC2APIError(msg)
 
-        group = {'user_id': context.user_id,
-                 'project_id': context.project_id,
-                 'name': group_name,
-                 'description': group_description}
-        group_ref = db.security_group_create(context, group)
+        try:
+            group = {'user_id': context.user_id,
+                     'project_id': context.project_id,
+                     'name': group_name,
+                     'description': group_description}
+            group_ref = db.security_group_create(context, group)
 
-        self.sgh.trigger_security_group_create_refresh(context, group)
+            self.sgh.trigger_security_group_create_refresh(context, group)
+
+            # Commit the reservation
+            QUOTAS.commit(context, reservations)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                QUOTAS.rollback(context, reservations)
 
         return {'securityGroupSet': [self._format_security_group(context,
                                                                  group_ref)]}
@@ -824,11 +841,25 @@ class CloudController(object):
                 raise notfound(security_group_id=group_id)
         if db.security_group_in_use(context, security_group.id):
             raise exception.InvalidGroup(reason="In Use")
+
+        # Get reservations
+        try:
+            reservations = QUOTAS.reserve(context, security_groups=-1)
+        except Exception:
+            reservations = None
+            LOG.exception(_("Failed to update usages deallocating "
+                            "security group"))
+
         LOG.audit(_("Delete security group %s"), group_name, context=context)
         db.security_group_destroy(context, security_group.id)
 
         self.sgh.trigger_security_group_destroy_refresh(context,
                                                         security_group.id)
+
+        # Commit the reservations
+        if reservations:
+            QUOTAS.commit(context, reservations)
+
         return True
 
     def get_console_output(self, context, instance_id, **kwargs):
@@ -864,11 +895,16 @@ class CloudController(object):
     def _format_volume(self, context, volume):
         instance_ec2_id = None
         instance_data = None
-        if volume.get('instance', None):
-            instance_id = volume['instance']['id']
+
+        if volume.get('instance_uuid', None):
+            instance_uuid = volume['instance_uuid']
+            instance = db.instance_get_by_uuid(context.elevated(),
+                    instance_uuid)
+
+            instance_id = instance['id']
             instance_ec2_id = ec2utils.id_to_ec2_id(instance_id)
             instance_data = '%s[%s]' % (instance_ec2_id,
-                                        volume['instance']['host'])
+                                        instance['host'])
         v = {}
         v['volumeId'] = ec2utils.id_to_ec2_vol_id(volume['id'])
         v['status'] = volume['status']
@@ -1272,18 +1308,24 @@ class CloudController(object):
 
     def release_address(self, context, public_ip, **kwargs):
         LOG.audit(_("Release address %s"), public_ip, context=context)
-        self.network_api.release_floating_ip(context, address=public_ip)
-        return {'return': "true"}
+        try:
+            self.network_api.release_floating_ip(context, address=public_ip)
+            return {'return': "true"}
+        except exception.FloatingIpNotFound:
+            raise exception.EC2APIError(_('Unable to release IP Address.'))
 
     def associate_address(self, context, instance_id, public_ip, **kwargs):
         LOG.audit(_("Associate address %(public_ip)s to"
                 " instance %(instance_id)s") % locals(), context=context)
         instance_id = ec2utils.ec2_id_to_id(instance_id)
         instance = self.compute_api.get(context, instance_id)
-        self.compute_api.associate_floating_ip(context,
-                                               instance,
-                                               address=public_ip)
-        return {'return': "true"}
+        try:
+            self.compute_api.associate_floating_ip(context,
+                                                   instance,
+                                                   address=public_ip)
+            return {'return': "true"}
+        except exception.FloatingIpNotFound:
+            raise exception.EC2APIError(_('Unable to associate IP Address.'))
 
     def disassociate_address(self, context, public_ip, **kwargs):
         LOG.audit(_("Disassociate address %s"), public_ip, context=context)

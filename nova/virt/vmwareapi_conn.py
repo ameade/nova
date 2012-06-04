@@ -69,11 +69,11 @@ vmwareapi_opts = [
                  default=5.0,
                  help='The interval used for polling of remote tasks. '
                        'Used only if connection_type is vmwareapi'),
-    cfg.FloatOpt('vmwareapi_api_retry_count',
-                 default=10,
-                 help='The number of times we retry on failures, e.g., '
-                      'socket error, etc. '
-                      'Used only if connection_type is vmwareapi'),
+    cfg.IntOpt('vmwareapi_api_retry_count',
+               default=10,
+               help='The number of times we retry on failures, e.g., '
+                    'socket error, etc. '
+                    'Used only if connection_type is vmwareapi'),
     cfg.StrOpt('vmwareapi_vlan_interface',
                default='vmnic0',
                help='Physical ethernet adapter name for vlan networking'),
@@ -276,7 +276,7 @@ class VMWareAPISession(object):
             except Exception, excep:
                 LOG.critical(_("In vmwareapi:_create_session, "
                               "got this exception: %s") % excep)
-                raise exception.Error(excep)
+                raise exception.NovaException(excep)
 
     def __del__(self):
         """Logs-out the session."""
@@ -389,10 +389,6 @@ class VMWareAPISession(object):
             task_info = self._call_method(vim_util, "get_dynamic_property",
                             task_ref, "Task", "info")
             task_name = task_info.name
-            action = dict(
-                instance_uuid=instance_uuid,
-                action=task_name[0:255],
-                error=None)
             if task_info.state in ['queued', 'running']:
                 return
             elif task_info.state == 'success':
@@ -401,11 +397,9 @@ class VMWareAPISession(object):
                 done.send("success")
             else:
                 error_info = str(task_info.error.localizedMessage)
-                action["error"] = error_info
                 LOG.warn(_("Task [%(task_name)s] %(task_ref)s "
                           "status: error %(error_info)s") % locals())
-                done.send_exception(exception.Error(error_info))
-            db.instance_action_create(context.get_admin_context(), action)
+                done.send_exception(exception.NovaException(error_info))
         except Exception, excep:
             LOG.warn(_("In vmwareapi:_poll_task, Got this error %s") % excep)
             done.send_exception(excep)

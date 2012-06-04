@@ -27,8 +27,7 @@ from nova import log as logging
 
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger("nova.api.openstack.compute.contrib."
-                        "extended_server_attributes")
+LOG = logging.getLogger(__name__)
 authorize = extensions.soft_extension_authorizer('compute',
                                                  'extended_server_attributes')
 
@@ -105,8 +104,8 @@ class Extended_server_attributes(extensions.ExtensionDescriptor):
 
     name = "ExtendedServerAttributes"
     alias = "OS-EXT-SRV-ATTR"
-    namespace = "http://docs.openstack.org/compute/ext/" \
-                "extended_status/api/v1.1"
+    namespace = ("http://docs.openstack.org/compute/ext/"
+                 "extended_status/api/v1.1")
     updated = "2011-11-03T00:00:00+00:00"
 
     def get_controller_extensions(self):
@@ -126,9 +125,9 @@ class ExtendedServerAttributeTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('server', selector='server')
         make_server(root)
-        return xmlutil.SlaveTemplate(root, 1, nsmap={
-            Extended_server_attributes.alias: \
-            Extended_server_attributes.namespace})
+        alias = Extended_server_attributes.alias
+        namespace = Extended_server_attributes.namespace
+        return xmlutil.SlaveTemplate(root, 1, nsmap={alias: namespace})
 
 
 class ExtendedServerAttributesTemplate(xmlutil.TemplateBuilder):
@@ -136,6 +135,6 @@ class ExtendedServerAttributesTemplate(xmlutil.TemplateBuilder):
         root = xmlutil.TemplateElement('servers')
         elem = xmlutil.SubTemplateElement(root, 'server', selector='servers')
         make_server(elem)
-        return xmlutil.SlaveTemplate(root, 1, nsmap={
-            Extended_server_attributes.alias: \
-            Extended_server_attributes.namespace})
+        alias = Extended_server_attributes.alias
+        namespace = Extended_server_attributes.namespace
+        return xmlutil.SlaveTemplate(root, 1, nsmap={alias: namespace})

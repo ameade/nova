@@ -101,10 +101,17 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
         LOG.info(_('Ensuring static filters'), instance=instance)
         self._ensure_static_filters()
 
+        allow_dhcp = False
+        for (network, mapping) in network_info:
+            if mapping['dhcp_server']:
+                allow_dhcp = True
+                break
         if instance['image_ref'] == str(FLAGS.vpn_image_id):
             base_filter = 'nova-vpn'
-        else:
+        elif allow_dhcp:
             base_filter = 'nova-base'
+        else:
+            base_filter = 'nova-nodhcp'
 
         for (network, mapping) in network_info:
             nic_id = mapping['mac'].replace(':', '')
@@ -128,6 +135,10 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
                                                     'no-ip-spoofing',
                                                     'no-arp-spoofing',
                                                     'allow-dhcp-server']))
+        self._define_filter(self._filter_container('nova-nodhcp',
+                                                   ['no-mac-spoofing',
+                                                    'no-ip-spoofing',
+                                                    'no-arp-spoofing']))
         self._define_filter(self._filter_container('nova-vpn',
                                                    ['allow-dhcp-server']))
         self._define_filter(self.nova_dhcp_filter)
@@ -149,7 +160,7 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
             # in the thread pool no matter what.
             tpool.execute(self._conn.nwfilterDefineXML, xml)
         else:
-            # NOTE(maoy): self._conn is a eventlet.tpool.Proxy object
+            # NOTE(maoy): self._conn is an eventlet.tpool.Proxy object
             self._conn.nwfilterDefineXML(xml)
 
     def unfilter_instance(self, instance, network_info):

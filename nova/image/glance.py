@@ -20,7 +20,6 @@
 from __future__ import absolute_import
 
 import copy
-import datetime
 import json
 import random
 import sys
@@ -291,7 +290,7 @@ class GlanceImageService(object):
                   base_image_meta)
         return base_image_meta
 
-    def update(self, context, image_id, image_meta, data=None):
+    def update(self, context, image_id, image_meta, data=None, features=None):
         """Replace the contents of the given image with the new data.
 
         :raises: ImageNotFound if the image does not exist.
@@ -302,7 +301,8 @@ class GlanceImageService(object):
         image_meta = self._translate_to_glance(image_meta)
         client = self._get_client(context)
         try:
-            image_meta = client.update_image(image_id, image_meta, data)
+            image_meta = client.update_image(image_id, image_meta, data,
+                                             features)
         except Exception:
             _reraise_translated_image_exception(image_id)
 
@@ -404,7 +404,7 @@ def _parse_glance_iso8601_timestamp(timestamp):
 
     for iso_format in iso_formats:
         try:
-            return datetime.datetime.strptime(timestamp, iso_format)
+            return utils.parse_strtime(timestamp, iso_format)
         except ValueError:
             pass
 

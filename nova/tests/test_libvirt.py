@@ -30,7 +30,6 @@ from xml.dom import minidom
 from nova.api.ec2 import cloud
 from nova.compute import instance_types
 from nova.compute import power_state
-from nova.compute import utils as compute_utils
 from nova.compute import vm_states
 from nova import context
 from nova import db
@@ -38,19 +37,20 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 from nova.openstack.common import importutils
+from nova.openstack.common import jsonutils
 from nova import test
-from nova.tests import fake_network
 from nova.tests import fake_libvirt_utils
+from nova.tests import fake_network
 from nova import utils
-from nova.virt import images
 from nova.virt import driver
 from nova.virt import firewall as base_firewall
+from nova.virt import images
 from nova.virt.libvirt import config
 from nova.virt.libvirt import connection
 from nova.virt.libvirt import firewall
+from nova.virt.libvirt import utils as libvirt_utils
 from nova.virt.libvirt import volume
 from nova.volume import driver as volume_driver
-from nova.virt.libvirt import utils as libvirt_utils
 
 
 try:
@@ -693,6 +693,66 @@ class LibvirtConnTestCase(test.TestCase):
         devices = conn.get_all_block_devices()
         self.assertEqual(devices, ['/path/to/dev/1', '/path/to/dev/3'])
 
+    def test_get_disks(self):
+        xml = [
+            # NOTE(vish): id 0 is skipped
+            None,
+            """
+                <domain type='kvm'>
+                    <devices>
+                        <disk type='file'>
+                            <source file='filename'/>
+                            <target dev='vda' bus='virtio'/>
+                        </disk>
+                        <disk type='block'>
+                            <source dev='/path/to/dev/1'/>
+                            <target dev='vdb' bus='virtio'/>
+                        </disk>
+                    </devices>
+                </domain>
+            """,
+            """
+                <domain type='kvm'>
+                    <devices>
+                        <disk type='file'>
+                            <source file='filename'/>
+                            <target dev='vda' bus='virtio'/>
+                        </disk>
+                    </devices>
+                </domain>
+            """,
+            """
+                <domain type='kvm'>
+                    <devices>
+                        <disk type='file'>
+                            <source file='filename'/>
+                            <target dev='vda' bus='virtio'/>
+                        </disk>
+                        <disk type='block'>
+                            <source dev='/path/to/dev/3'/>
+                            <target dev='vdb' bus='virtio'/>
+                        </disk>
+                    </devices>
+                </domain>
+            """,
+        ]
+
+        def fake_lookup(id):
+            return FakeVirtDomain(xml[id])
+
+        def fake_lookup_name(name):
+            return FakeVirtDomain(xml[1])
+
+        self.mox.StubOutWithMock(connection.LibvirtConnection, '_conn')
+        connection.LibvirtConnection._conn.listDomainsID = lambda: range(4)
+        connection.LibvirtConnection._conn.lookupByID = fake_lookup
+        connection.LibvirtConnection._conn.lookupByName = fake_lookup_name
+
+        self.mox.ReplayAll()
+        conn = connection.LibvirtConnection(False)
+        devices = conn.get_disks(conn.list_instances()[0])
+        self.assertEqual(devices, ['vda', 'vdb'])
+
     @test.skip_if(missing_libvirt(), "Test requires libvirt")
     def test_snapshot_in_ami_format(self):
         self.flags(image_service='nova.image.fake.FakeImageService')
@@ -896,8 +956,6 @@ class LibvirtConnTestCase(test.TestCase):
         self.assertEquals(interfaces[0].get('type'), 'bridge')
         self.assertEquals(parameters[0].get('name'), 'IP')
         self.assertTrue(_ipv4_like(parameters[0].get('value'), '192.168'))
-        self.assertEquals(parameters[1].get('name'), 'DHCPSERVER')
-        self.assertTrue(_ipv4_like(parameters[1].get('value'), '192.168.*.1'))
 
     def _check_xml_and_container(self, instance):
         user_context = context.RequestContext(self.user_id,
@@ -1098,9 +1156,6 @@ class LibvirtConnTestCase(test.TestCase):
             (lambda t: t.find(parameter).get('name'), 'IP'),
             (lambda t: _ipv4_like(t.find(parameter).get('value'), '192.168'),
              True),
-            (lambda t: t.findall(parameter)[1].get('name'), 'DHCPSERVER'),
-            (lambda t: _ipv4_like(t.findall(parameter)[1].get('value'),
-                                  '192.168.*.1'), True),
             (lambda t: t.find('./memory').text, '2097152')]
         if rescue:
             common_checks += [
@@ -1193,8 +1248,8 @@ class LibvirtConnTestCase(test.TestCase):
             conn.ensure_filtering_rules_for_instance(instance_ref,
                                                      network_info,
                                                      time=fake_timer)
-        except exception.Error, e:
-            c1 = (0 <= e.message.find('Timeout migrating for'))
+        except exception.NovaException, e:
+            c1 = (0 <= str(e).find('Timeout migrating for'))
         self.assertTrue(c1)
 
         self.assertEqual(29, fake_timer.counter, "Didn't wait the expected "
@@ -1215,7 +1270,9 @@ class LibvirtConnTestCase(test.TestCase):
                                           instance_dict)
         vol_dict = {'status': 'migrating', 'size': 1}
         volume_ref = db.volume_create(self.context, vol_dict)
-        db.volume_attached(self.context, volume_ref['id'], instance_ref['id'],
+        db.volume_attached(self.context,
+                           volume_ref['id'],
+                           instance_ref['uuid'],
                            '/dev/fake')
 
         # Preparing mocks
@@ -1348,7 +1405,7 @@ class LibvirtConnTestCase(test.TestCase):
         self.mox.ReplayAll()
         conn = connection.LibvirtConnection(False)
         info = conn.get_instance_disk_info(instance_ref.name)
-        info = utils.loads(info)
+        info = jsonutils.loads(info)
         self.assertEquals(info[0]['type'], 'raw')
         self.assertEquals(info[0]['path'], '/test/disk')
         self.assertEquals(info[0]['disk_size'], 10737418240)
@@ -1403,7 +1460,6 @@ class LibvirtConnTestCase(test.TestCase):
             shutil.rmtree(os.path.join(FLAGS.instances_path,
                                        FLAGS.base_dir_name))
 
-    @test.skip_if(missing_libvirt(), "Test requires libvirt")
     def test_get_console_output_file(self):
 
         with utils.tempdir() as tmpdir:
@@ -1438,13 +1494,12 @@ class LibvirtConnTestCase(test.TestCase):
 
             self.create_fake_libvirt_mock()
             connection.LibvirtConnection._conn.lookupByName = fake_lookup
-            connection.libvirt_utils = libvirt_utils
+            connection.libvirt_utils = fake_libvirt_utils
 
             conn = connection.LibvirtConnection(False)
             output = conn.get_console_output(instance)
             self.assertEquals("foo", output)
 
-    @test.skip_if(missing_libvirt(), "Test requires libvirt")
     def test_get_console_output_pty(self):
 
         with utils.tempdir() as tmpdir:
@@ -1477,9 +1532,14 @@ class LibvirtConnTestCase(test.TestCase):
             def fake_lookup(id):
                 return FakeVirtDomain(fake_dom_xml)
 
+            def _fake_flush(self, fake_pty):
+                with open(fake_pty, 'r+') as fp:
+                    return fp.read()
+
             self.create_fake_libvirt_mock()
             connection.LibvirtConnection._conn.lookupByName = fake_lookup
-            connection.libvirt_utils = libvirt_utils
+            connection.LibvirtConnection._flush_libvirt_console = _fake_flush
+            connection.libvirt_utils = fake_libvirt_utils
 
             conn = connection.LibvirtConnection(False)
             output = conn.get_console_output(instance)
@@ -1635,6 +1695,9 @@ class HostStateTestCase(test.TestCase):
         def get_hypervisor_version(self):
             return 13091
 
+        def get_hypervisor_hostname(self):
+            return 'compute1'
+
         def get_disk_available_least(self):
             return 13091
 
@@ -1661,6 +1724,7 @@ class HostStateTestCase(test.TestCase):
         self.assertEquals(stats["host_memory_free"], 409)
         self.assertEquals(stats["hypervisor_type"], 'QEMU')
         self.assertEquals(stats["hypervisor_version"], 13091)
+        self.assertEquals(stats["hypervisor_hostname"], 'compute1')
 
 
 class NWFilterFakes:
@@ -1827,7 +1891,7 @@ class IptablesFirewallTestCase(test.TestCase):
 
         _fake_stub_out_get_nw_info(self.stubs, lambda *a, **kw: network_model)
 
-        network_info = compute_utils.legacy_network_info(network_model)
+        network_info = network_model.legacy()
         self.fw.prepare_instance_filter(instance_ref, network_info)
         self.fw.apply_instance_filter(instance_ref, network_info)
 
@@ -2115,12 +2179,14 @@ class NWFilterTestCase(test.TestCase):
         inst_id = instance_ref['id']
         inst_uuid = instance_ref['uuid']
 
-        def _ensure_all_called(mac):
+        def _ensure_all_called(mac, allow_dhcp):
             instance_filter = 'nova-instance-%s-%s' % (instance_ref['name'],
                                                    mac.translate(None, ':'))
-            for required in ['allow-dhcp-server',
-                             'no-arp-spoofing', 'no-ip-spoofing',
-                             'no-mac-spoofing']:
+            requiredlist = ['no-arp-spoofing', 'no-ip-spoofing',
+                             'no-mac-spoofing']
+            if allow_dhcp:
+                requiredlist.append('allow-dhcp-server')
+            for required in requiredlist:
                 self.assertTrue(required in
                                 self.recursive_depends[instance_filter],
                                 "Instance's filter does not include %s" %
@@ -2139,7 +2205,12 @@ class NWFilterTestCase(test.TestCase):
         mac = network_info[0][1]['mac']
 
         self.fw.setup_basic_filtering(instance, network_info)
-        _ensure_all_called(mac)
+        allow_dhcp = False
+        for (network, mapping) in network_info:
+            if mapping['dhcp_server']:
+                allow_dhcp = True
+                break
+        _ensure_all_called(mac, allow_dhcp)
         db.instance_remove_security_group(self.context, inst_uuid,
                                           self.security_group.id)
         self.teardown_security_group()
@@ -2198,7 +2269,7 @@ class LibvirtUtilsTestCase(test.TestCase):
     def test_create_cow_image(self):
         self.mox.StubOutWithMock(utils, 'execute')
         utils.execute('qemu-img', 'create', '-f', 'qcow2',
-                      '-o', 'cluster_size=2M,backing_file=/some/path',
+                      '-o', 'backing_file=/some/path',
                       '/the/new/cow')
         # Start test
         self.mox.ReplayAll()
@@ -2358,6 +2429,29 @@ disk size: 4.4M''', ''))
         libvirt_utils.fetch_image(context, target, image_id,
                                   user_id, project_id)
 
+    def test_get_disk_backing_file(self):
+        with_actual_path = False
+
+        def fake_execute(*args, **kwargs):
+            if with_actual_path:
+                return ("some\n"
+                        "output\n"
+                        "backing file: /foo/bar/baz (actual path: /a/b/c)\n"
+                        "...\n"), ''
+            else:
+                return ("some\n"
+                        "output\n"
+                        "backing file: /foo/bar/baz\n"
+                        "...\n"), ''
+
+        self.stubs.Set(utils, 'execute', fake_execute)
+
+        out = libvirt_utils.get_disk_backing_file('')
+        self.assertEqual(out, 'baz')
+        with_actual_path = True
+        out = libvirt_utils.get_disk_backing_file('')
+        self.assertEqual(out, 'c')
+
 
 class LibvirtConnectionTestCase(test.TestCase):
     """Test for nova.virt.libvirt.connection.LibvirtConnection."""
@@ -2440,7 +2534,7 @@ class LibvirtConnectionTestCase(test.TestCase):
                       'virt_disk_size': '10737418240',
                       'backing_file': '/base/disk.local',
                       'disk_size':'83886080'}]
-        disk_info_text = utils.dumps(disk_info)
+        disk_info_text = jsonutils.dumps(disk_info)
 
         def fake_get_instance_disk_info(instance):
             return disk_info_text
@@ -2511,7 +2605,7 @@ class LibvirtConnectionTestCase(test.TestCase):
                       'local_gb': 10, 'backing_file': '/base/disk'},
                      {'type': 'raw', 'path': '/test/disk.local',
                       'local_gb': 10, 'backing_file': '/base/disk.local'}]
-        disk_info_text = utils.dumps(disk_info)
+        disk_info_text = jsonutils.dumps(disk_info)
 
         def fake_extend(path, size):
             pass
@@ -2601,4 +2695,4 @@ class LibvirtNonblockingTestCase(test.TestCase):
         """Test bug 962840"""
         import nova.virt.libvirt.connection
         connection = nova.virt.libvirt.connection.get_connection('')
-        utils.to_primitive(connection._conn, convert_instances=True)
+        jsonutils.to_primitive(connection._conn, convert_instances=True)

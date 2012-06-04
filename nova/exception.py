@@ -25,12 +25,12 @@ SHOULD include dedicated exception logging.
 """
 
 import functools
-import inspect
-import sys
+import itertools
 
 import webob.exc
 
 from nova import log as logging
+from nova.openstack.common import excutils
 
 LOG = logging.getLogger(__name__)
 
@@ -62,28 +62,6 @@ class ProcessExecutionError(IOError):
         IOError.__init__(self, message)
 
 
-class Error(Exception):
-    pass
-
-
-class EC2APIError(Error):
-    def __init__(self, message='Unknown', code=None):
-        self.msg = message
-        self.code = code
-        if code:
-            outstr = '%s: %s' % (code, message)
-        else:
-            outstr = '%s' % message
-        super(EC2APIError, self).__init__(outstr)
-
-
-class DBError(Error):
-    """Wraps an implementation specific exception."""
-    def __init__(self, inner_exception=None):
-        self.inner_exception = inner_exception
-        super(DBError, self).__init__(str(inner_exception))
-
-
 def wrap_db_error(f):
     def _wrap(*args, **kwargs):
         try:
@@ -113,36 +91,30 @@ def wrap_exception(notifier=None, publisher_id=None, event_type=None,
             try:
                 return f(*args, **kw)
             except Exception, e:
-                # Save exception since it can be clobbered during processing
-                # below before we can re-raise
-                exc_info = sys.exc_info()
+                with excutils.save_and_reraise_exception():
+                    if notifier:
+                        payload = dict(args=args, exception=e)
+                        payload.update(kw)
 
-                if notifier:
-                    payload = dict(args=args, exception=e)
-                    payload.update(kw)
+                        # Use a temp vars so we don't shadow
+                        # our outer definitions.
+                        temp_level = level
+                        if not temp_level:
+                            temp_level = notifier.ERROR
 
-                    # Use a temp vars so we don't shadow
-                    # our outer definitions.
-                    temp_level = level
-                    if not temp_level:
-                        temp_level = notifier.ERROR
+                        temp_type = event_type
+                        if not temp_type:
+                            # If f has multiple decorators, they must use
+                            # functools.wraps to ensure the name is
+                            # propagated.
+                            temp_type = f.__name__
 
-                    temp_type = event_type
-                    if not temp_type:
-                        # If f has multiple decorators, they must use
-                        # functools.wraps to ensure the name is
-                        # propagated.
-                        temp_type = f.__name__
+                        context = get_context_from_function_and_args(f,
+                                                                     args,
+                                                                     kw)
 
-                    context = get_context_from_function_and_args(f,
-                                                                 args,
-                                                                 kw)
-
-                    notifier.notify(context, publisher_id, temp_type,
-                                    temp_level, payload)
-
-                # re-raise original exception since it may have been clobbered
-                raise exc_info[0], exc_info[1], exc_info[2]
+                        notifier.notify(context, publisher_id, temp_type,
+                                        temp_level, payload)
 
         return functools.wraps(f)(wrapped)
     return inner
@@ -181,6 +153,26 @@ class NovaException(Exception):
                 message = self.message
 
         super(NovaException, self).__init__(message)
+
+
+class EC2APIError(NovaException):
+    message = _("Unknown")
+
+    def __init__(self, message=None, code=None):
+        self.msg = message
+        self.code = code
+        if code:
+            outstr = '%s: %s' % (code, message)
+        else:
+            outstr = '%s' % message
+        super(EC2APIError, self).__init__(outstr)
+
+
+class DBError(NovaException):
+    """Wraps an implementation specific exception."""
+    def __init__(self, inner_exception=None):
+        self.inner_exception = inner_exception
+        super(DBError, self).__init__(str(inner_exception))
 
 
 class DecryptionFailure(NovaException):
@@ -290,10 +282,6 @@ class InvalidCidr(Invalid):
     message = _("Invalid cidr %(cidr)s.")
 
 
-class InvalidRPCConnectionReuse(Invalid):
-    message = _("Invalid reuse of an RPC connection.")
-
-
 class InvalidUnicodeParameter(Invalid):
     message = _("Invalid Parameter: "
                 "Unicode is not supported by the current database.")
@@ -349,10 +337,6 @@ class InstanceTerminationFailure(Invalid):
 
 class ServiceUnavailable(Invalid):
     message = _("Service is unavailable at this time.")
-
-
-class VolumeServiceUnavailable(ServiceUnavailable):
-    message = _("Volume service is unavailable at this time.")
 
 
 class ComputeServiceUnavailable(ServiceUnavailable):
@@ -431,13 +415,13 @@ class InvalidEc2Id(Invalid):
     message = _("Ec2 id %(ec2_id)s is unacceptable.")
 
 
+class InvalidUUID(Invalid):
+    message = _("Expected a uuid but received %(uuid).")
+
+
 class NotFound(NovaException):
     message = _("Resource could not be found.")
     code = 404
-
-
-class FlagNotSet(NotFound):
-    message = _("Required flag %(flag)s not set.")
 
 
 class VolumeNotFound(NotFound):
@@ -701,8 +685,21 @@ class AccessKeyNotFound(NotFound):
     message = _("Access Key %(access_key)s could not be found.")
 
 
+class InvalidReservationExpiration(Invalid):
+    message = _("Invalid reservation expiration %(expire)s.")
+
+
+class InvalidQuotaValue(Invalid):
+    message = _("Change would make usage less than 0 for the following "
+                "resources: %(unders)s")
+
+
 class QuotaNotFound(NotFound):
     message = _("Quota could not be found")
+
+
+class QuotaResourceUnknown(QuotaNotFound):
+    message = _("Unknown quota resources %(unknown)s.")
 
 
 class ProjectQuotaNotFound(QuotaNotFound):
@@ -711,6 +708,18 @@ class ProjectQuotaNotFound(QuotaNotFound):
 
 class QuotaClassNotFound(QuotaNotFound):
     message = _("Quota class %(class_name)s could not be found.")
+
+
+class QuotaUsageNotFound(QuotaNotFound):
+    message = _("Quota usage for project %(project_id)s could not be found.")
+
+
+class ReservationNotFound(QuotaNotFound):
+    message = _("Quota reservation %(uuid)s could not be found.")
+
+
+class OverQuota(NovaException):
+    message = _("Quota exceeded for resources: %(overs)s")
 
 
 class SecurityGroupNotFound(NotFound):
@@ -808,6 +817,11 @@ class SchedulerWeightFlagNotFound(NotFound):
 
 class InstanceMetadataNotFound(NotFound):
     message = _("Instance %(instance_id)s has no metadata with "
+                "key %(metadata_key)s.")
+
+
+class InstanceSystemMetadataNotFound(NotFound):
+    message = _("Instance %(instance_uuid)s has no system metadata with "
                 "key %(metadata_key)s.")
 
 
@@ -923,11 +937,13 @@ class MalformedRequestBody(NovaException):
     message = _("Malformed message body: %(reason)s")
 
 
-class ConfigNotFound(NotFound):
+# NOTE(johannes): NotFound should only be used when a 404 error is
+# appropriate to be returned
+class ConfigNotFound(NovaException):
     message = _("Could not find config at %(path)s")
 
 
-class PasteAppNotFound(NotFound):
+class PasteAppNotFound(NovaException):
     message = _("Could not load paste app '%(name)s' from %(path)s")
 
 
@@ -980,6 +996,10 @@ class VolumeSizeTooLarge(QuotaError):
     message = _("Maximum volume size exceeded")
 
 
+class FloatingIpLimitExceeded(QuotaError):
+    message = _("Maximum number of floating ips exceeded")
+
+
 class MetadataLimitExceeded(QuotaError):
     message = _("Maximum number of metadata items exceeds %(allowed)d")
 
@@ -994,6 +1014,10 @@ class OnsetFilePathLimitExceeded(QuotaError):
 
 class OnsetFileContentLimitExceeded(QuotaError):
     message = _("Personality file content too long")
+
+
+class KeypairLimitExceeded(QuotaError):
+    message = _("Maximum number of key pairs exceeded")
 
 
 class AggregateError(NovaException):
@@ -1068,19 +1092,17 @@ class CouldNotFetchImage(NovaException):
 
 
 def get_context_from_function_and_args(function, args, kwargs):
-    """Find an arg named 'context' and return the value.
+    """Find an arg of type RequestContext and return it.
 
        This is useful in a couple of decorators where we don't
        know much about the function we're wrapping.
     """
-    context = None
-    if 'context' in kwargs.keys():
-        context = kwargs['context']
-    else:
-        (iargs, _iva, _ikw, _idf) = inspect.getargspec(function)
-        if 'context' in iargs:
-            index = iargs.index('context')
-            if len(args) > index:
-                context = args[index]
 
-    return context
+    # import here to avoid circularity:
+    from nova import context
+
+    for arg in itertools.chain(kwargs.values(), args):
+        if isinstance(arg, context.RequestContext):
+            return arg
+
+    return None

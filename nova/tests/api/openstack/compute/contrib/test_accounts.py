@@ -19,9 +19,9 @@ import json
 from lxml import etree
 import webob
 
-from nova import test
 from nova.api.openstack.compute.contrib import accounts
 from nova.auth import manager as auth_manager
+from nova import test
 from nova.tests.api.openstack import fakes
 
 
@@ -39,7 +39,6 @@ class AccountsTest(test.TestCase):
         fakes.FakeAuthDatabase.data = {}
         fakes.stub_out_networking(self.stubs)
         fakes.stub_out_rate_limiting(self.stubs)
-        fakes.stub_out_auth(self.stubs)
 
         fakemgr = fakes.FakeAuthManager()
         joeuser = auth_manager.User('id1', 'guy1', 'acc1', 'secret1', False)

@@ -19,24 +19,27 @@ queues.  Casts will block, but this is very useful for tests.
 
 import inspect
 import json
-import signal
-import sys
 import time
-import traceback
 
 import eventlet
 
-from nova import context
 from nova.rpc import common as rpc_common
 
 CONSUMERS = {}
 
 
-class RpcContext(context.RequestContext):
-    def __init__(self, *args, **kwargs):
-        super(RpcContext, self).__init__(*args, **kwargs)
+class RpcContext(rpc_common.CommonRpcContext):
+    def __init__(self, **kwargs):
+        super(RpcContext, self).__init__(**kwargs)
         self._response = []
         self._done = False
+
+    def deepcopy(self):
+        values = self.to_dict()
+        new_inst = self.__class__(**values)
+        new_inst._response = self._response
+        new_inst._done = self._done
+        return new_inst
 
     def reply(self, reply=None, failure=None, ending=False):
         if ending:
@@ -50,15 +53,13 @@ class Consumer(object):
         self.topic = topic
         self.proxy = proxy
 
-    def call(self, context, method, args, timeout):
-        node_func = getattr(self.proxy, method)
-        node_args = dict((str(k), v) for k, v in args.iteritems())
+    def call(self, context, version, method, args, timeout):
         done = eventlet.event.Event()
 
         def _inner():
             ctxt = RpcContext.from_dict(context.to_dict())
             try:
-                rval = node_func(context=ctxt, **node_args)
+                rval = self.proxy.dispatch(context, version, method, **args)
                 res = []
                 # Caller might have called ctxt.reply() manually
                 for (reply, failure) in ctxt._response:
@@ -132,13 +133,14 @@ def multicall(conf, context, topic, msg, timeout=None):
     if not method:
         return
     args = msg.get('args', {})
+    version = msg.get('version', None)
 
     try:
         consumer = CONSUMERS[topic][0]
     except (KeyError, IndexError):
         return iter([None])
     else:
-        return consumer.call(context, method, args, timeout)
+        return consumer.call(context, version, method, args, timeout)
 
 
 def call(conf, context, topic, msg, timeout=None):
@@ -173,10 +175,11 @@ def fanout_cast(conf, context, topic, msg):
     if not method:
         return
     args = msg.get('args', {})
+    version = msg.get('version', None)
 
     for consumer in CONSUMERS.get(topic, []):
         try:
-            consumer.call(context, method, args, None)
+            consumer.call(context, version, method, args, None)
         except Exception:
             pass
 

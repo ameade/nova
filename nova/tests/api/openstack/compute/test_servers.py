@@ -39,8 +39,8 @@ from nova import flags
 import nova.image.fake
 import nova.rpc
 from nova import test
-from nova.tests import fake_network
 from nova.tests.api.openstack import fakes
+from nova.tests import fake_network
 from nova import utils
 
 
@@ -72,7 +72,8 @@ def return_security_group(context, instance_id, security_group_id):
 
 
 def instance_update(context, instance_id, values):
-    return fakes.stub_instance(instance_id, name=values.get('display_name'))
+    inst = fakes.stub_instance(instance_id, name=values.get('display_name'))
+    return (inst, inst)
 
 
 def fake_compute_api(cls, req, id):
@@ -106,7 +107,8 @@ class ServersControllerTest(test.TestCase):
                        return_servers)
         self.stubs.Set(nova.db, 'instance_add_security_group',
                        return_security_group)
-        self.stubs.Set(nova.db, 'instance_update', instance_update)
+        self.stubs.Set(nova.db, 'instance_update_and_get_original',
+                instance_update)
 
         self.controller = servers.Controller()
         self.ips_controller = ips.Controller()
@@ -1287,6 +1289,7 @@ class ServersControllerTest(test.TestCase):
             self.assertEqual(s['name'], 'server%d' % (i + 1))
 
     def test_delete_server_instance(self):
+        fakes.stub_out_instance_quota(self.stubs, 0)
         req = fakes.HTTPRequest.blank('/v2/fake/servers/%s' % FAKE_UUID)
         req.method = 'DELETE'
 
@@ -1304,6 +1307,7 @@ class ServersControllerTest(test.TestCase):
         self.assertEqual(self.server_delete_called, True)
 
     def test_delete_server_instance_while_building(self):
+        fakes.stub_out_instance_quota(self.stubs, 0)
         req = fakes.HTTPRequest.blank('/v2/fake/servers/%s' % FAKE_UUID)
         req.method = 'DELETE'
 
@@ -1431,7 +1435,9 @@ class ServersControllerCreateTest(test.TestCase):
                 "updated_at": datetime.datetime(2010, 11, 11, 11, 0, 0),
                 "config_drive": None,
                 "progress": 0,
-                "fixed_ips": []
+                "fixed_ips": [],
+                "task_state": "",
+                "vm_state": "",
             }
             self.instance_cache[instance['id']] = instance
             return instance
@@ -1442,7 +1448,7 @@ class ServersControllerCreateTest(test.TestCase):
             """
             return self.instance_cache[instance_id]
 
-        def rpc_call_wrapper(context, topic, msg):
+        def rpc_call_wrapper(context, topic, msg, timeout=None):
             """Stub out the scheduler creating the instance entry"""
             if (topic == FLAGS.scheduler_topic and
                 msg['method'] == 'run_instance'):
@@ -1457,7 +1463,7 @@ class ServersControllerCreateTest(test.TestCase):
         def server_update(context, instance_id, params):
             inst = self.instance_cache[instance_id]
             inst.update(params)
-            return inst
+            return (inst, inst)
 
         def fake_method(*args, **kwargs):
             pass
@@ -1478,11 +1484,14 @@ class ServersControllerCreateTest(test.TestCase):
         self.stubs.Set(nova.db, 'project_get_networks',
                        project_get_networks)
         self.stubs.Set(nova.db, 'instance_create', instance_create)
+        self.stubs.Set(nova.db, 'instance_system_metadata_update',
+                fake_method)
         self.stubs.Set(nova.db, 'instance_get', instance_get)
         self.stubs.Set(nova.rpc, 'cast', fake_method)
         self.stubs.Set(nova.rpc, 'call', rpc_call_wrapper)
-        self.stubs.Set(nova.db, 'instance_update', server_update)
-        self.stubs.Set(nova.db, 'queue_get_for', queue_get_for)
+        self.stubs.Set(nova.db, 'instance_update_and_get_original',
+                server_update)
+        self.stubs.Set(nova.rpc, 'queue_get_for', queue_get_for)
         self.stubs.Set(nova.network.manager.VlanManager, 'allocate_fixed_ip',
                        fake_method)
 
@@ -2336,7 +2345,7 @@ class ServersControllerCreateTest(test.TestCase):
         req.headers["content-type"] = "application/json"
         try:
             server = self.controller.create(req, body).obj['server']
-            fail('excepted quota to be exceeded')
+            self.fail('expected quota to be exceeded')
         except webob.exc.HTTPRequestEntityTooLarge as e:
             self.assertEquals(e.explanation,
                       _('Quota exceeded: already used 1 of 1 instances'))

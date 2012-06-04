@@ -16,8 +16,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nova import test
+from nova import context
 from nova import exception
+from nova import test
 
 
 class EC2APIErrorTestCase(test.TestCase):
@@ -56,10 +57,6 @@ def good_function():
     return 99
 
 
-def bad_function_error():
-    raise exception.Error()
-
-
 def bad_function_exception(blah="a", boo="b", context=None):
     raise test.TestingException()
 
@@ -68,10 +65,6 @@ class WrapExceptionTestCase(test.TestCase):
     def test_wrap_exception_good_return(self):
         wrapped = exception.wrap_exception()
         self.assertEquals(99, wrapped(good_function)())
-
-    def test_wrap_exception_throws_error(self):
-        wrapped = exception.wrap_exception()
-        self.assertRaises(exception.Error, wrapped(bad_function_error))
 
     def test_wrap_exception_throws_exception(self):
         wrapped = exception.wrap_exception()
@@ -82,12 +75,13 @@ class WrapExceptionTestCase(test.TestCase):
         notifier = FakeNotifier()
         wrapped = exception.wrap_exception(notifier, "publisher", "event",
                                            "level")
+        ctxt = context.get_admin_context()
         self.assertRaises(test.TestingException,
-                          wrapped(bad_function_exception), context="context")
+                          wrapped(bad_function_exception), context=ctxt)
         self.assertEquals(notifier.provided_publisher, "publisher")
         self.assertEquals(notifier.provided_event, "event")
         self.assertEquals(notifier.provided_priority, "level")
-        self.assertEquals(notifier.provided_context, "context")
+        self.assertEquals(notifier.provided_context, ctxt)
         for key in ['exception', 'args']:
             self.assertTrue(key in notifier.provided_payload.keys())
 

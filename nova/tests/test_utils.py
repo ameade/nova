@@ -19,8 +19,8 @@ import datetime
 import hashlib
 import os
 import os.path
-import socket
 import shutil
+import socket
 import StringIO
 import tempfile
 
@@ -87,7 +87,7 @@ exit 1
             os.unlink(tmpfilename2)
 
     def test_unknown_kwargs_raises_error(self):
-        self.assertRaises(exception.Error,
+        self.assertRaises(exception.NovaException,
                           utils.execute,
                           '/usr/bin/env', 'true',
                           this_is_not_a_valid_kwarg=True)
@@ -229,16 +229,16 @@ class GetFromPathTestCase(test.TestCase):
     def test_bad_xpath(self):
         f = utils.get_from_path
 
-        self.assertRaises(exception.Error, f, [], None)
-        self.assertRaises(exception.Error, f, [], "")
-        self.assertRaises(exception.Error, f, [], "/")
-        self.assertRaises(exception.Error, f, [], "/a")
-        self.assertRaises(exception.Error, f, [], "/a/")
-        self.assertRaises(exception.Error, f, [], "//")
-        self.assertRaises(exception.Error, f, [], "//a")
-        self.assertRaises(exception.Error, f, [], "a//a")
-        self.assertRaises(exception.Error, f, [], "a//a/")
-        self.assertRaises(exception.Error, f, [], "a/a/")
+        self.assertRaises(exception.NovaException, f, [], None)
+        self.assertRaises(exception.NovaException, f, [], "")
+        self.assertRaises(exception.NovaException, f, [], "/")
+        self.assertRaises(exception.NovaException, f, [], "/a")
+        self.assertRaises(exception.NovaException, f, [], "/a/")
+        self.assertRaises(exception.NovaException, f, [], "//")
+        self.assertRaises(exception.NovaException, f, [], "//a")
+        self.assertRaises(exception.NovaException, f, [], "a//a")
+        self.assertRaises(exception.NovaException, f, [], "a//a/")
+        self.assertRaises(exception.NovaException, f, [], "a/a/")
 
     def test_real_failure1(self):
         # Real world failure case...
@@ -441,93 +441,6 @@ class IsUUIDLikeTestCase(test.TestCase):
 
     def test_gen_valid_uuid(self):
         self.assertUUIDLike(str(utils.gen_uuid()), True)
-
-
-class ToPrimitiveTestCase(test.TestCase):
-    def test_list(self):
-        self.assertEquals(utils.to_primitive([1, 2, 3]), [1, 2, 3])
-
-    def test_empty_list(self):
-        self.assertEquals(utils.to_primitive([]), [])
-
-    def test_tuple(self):
-        self.assertEquals(utils.to_primitive((1, 2, 3)), [1, 2, 3])
-
-    def test_dict(self):
-        self.assertEquals(utils.to_primitive(dict(a=1, b=2, c=3)),
-                          dict(a=1, b=2, c=3))
-
-    def test_empty_dict(self):
-        self.assertEquals(utils.to_primitive({}), {})
-
-    def test_datetime(self):
-        x = datetime.datetime(1, 2, 3, 4, 5, 6, 7)
-        self.assertEquals(utils.to_primitive(x), "0001-02-03 04:05:06.000007")
-
-    def test_iter(self):
-        class IterClass(object):
-            def __init__(self):
-                self.data = [1, 2, 3, 4, 5]
-                self.index = 0
-
-            def __iter__(self):
-                return self
-
-            def next(self):
-                if self.index == len(self.data):
-                    raise StopIteration
-                self.index = self.index + 1
-                return self.data[self.index - 1]
-
-        x = IterClass()
-        self.assertEquals(utils.to_primitive(x), [1, 2, 3, 4, 5])
-
-    def test_iteritems(self):
-        class IterItemsClass(object):
-            def __init__(self):
-                self.data = dict(a=1, b=2, c=3).items()
-                self.index = 0
-
-            def __iter__(self):
-                return self
-
-            def next(self):
-                if self.index == len(self.data):
-                    raise StopIteration
-                self.index = self.index + 1
-                return self.data[self.index - 1]
-
-        x = IterItemsClass()
-        ordered = utils.to_primitive(x)
-        ordered.sort()
-        self.assertEquals(ordered, [['a', 1], ['b', 2], ['c', 3]])
-
-    def test_instance(self):
-        class MysteryClass(object):
-            a = 10
-
-            def __init__(self):
-                self.b = 1
-
-        x = MysteryClass()
-        self.assertEquals(utils.to_primitive(x, convert_instances=True),
-                          dict(b=1))
-
-        self.assertEquals(utils.to_primitive(x), x)
-
-    def test_typeerror(self):
-        x = bytearray  # Class, not instance
-        self.assertEquals(utils.to_primitive(x), u"<type 'bytearray'>")
-
-    def test_nasties(self):
-        def foo():
-            pass
-        x = [datetime, foo, dir]
-        ret = utils.to_primitive(x)
-        self.assertEquals(len(ret), 3)
-        self.assertTrue(ret[0].startswith(u"<module 'datetime' from "))
-        self.assertTrue(ret[1].startswith('<function foo at 0x'))
-        self.assertEquals(ret[2], '<built-in function dir>')
 
 
 class MonkeyPatchTestCase(test.TestCase):

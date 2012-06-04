@@ -27,7 +27,6 @@ import os
 import re
 import sys
 import tokenize
-import traceback
 import warnings
 
 import pep8
@@ -49,8 +48,8 @@ VERBOSE_MISSING_IMPORT = False
 
 
 def is_import_exception(mod):
-    return mod in IMPORT_EXCEPTIONS or \
-        any(mod.startswith(m + '.') for m in IMPORT_EXCEPTIONS)
+    return (mod in IMPORT_EXCEPTIONS or
+            any(mod.startswith(m + '.') for m in IMPORT_EXCEPTIONS))
 
 
 def import_normalize(line):
@@ -61,8 +60,7 @@ def import_normalize(line):
            split_line[2] == "import" and split_line[3] != "*" and
            split_line[1] != "__future__" and
            (len(split_line) == 4 or
-           (len(split_line) == 6  and split_line[4] == "as"))):
-        mod = split_line[3]
+           (len(split_line) == 6 and split_line[4] == "as"))):
         return "import %s.%s" % (split_line[1], split_line[3])
     else:
         return line
@@ -77,7 +75,7 @@ def nova_todo_format(physical_line):
     """
     pos = physical_line.find('TODO')
     pos1 = physical_line.find('TODO(')
-    pos2 = physical_line.find('#')  # make sure its a comment
+    pos2 = physical_line.find('#')  # make sure it's a comment
     if (pos != pos1 and pos2 >= 0 and pos2 < pos):
         return pos, "NOVA N101: Use TODO(NAME)"
 
@@ -116,9 +114,9 @@ def nova_one_import_per_line(logical_line):
     """
     pos = logical_line.find(',')
     parts = logical_line.split()
-    if pos > -1 and (parts[0] == "import" or
-       parts[0] == "from" and parts[2] == "import") and \
-       not is_import_exception(parts[1]):
+    if (pos > -1 and (parts[0] == "import" or
+                      parts[0] == "from" and parts[2] == "import") and
+        not is_import_exception(parts[1])):
         return pos, "NOVA N301: one import per line"
 
 _missingImport = set([])
@@ -214,8 +212,8 @@ def nova_import_alphabetical(physical_line, line_number, lines):
             ).strip().lower().split()
     # with or without "as y"
     length = [2, 4]
-    if (len(split_line) in length  and len(split_previous) in length and
-        split_line[0] == "import" and  split_previous[0] == "import"):
+    if (len(split_line) in length and len(split_previous) in length and
+        split_line[0] == "import" and split_previous[0] == "import"):
         if split_line[1] < split_previous[1]:
             return (0, "NOVA N306: imports not in alphabetical order (%s, %s)"
                 % (split_previous[1], split_line[1]))
@@ -244,7 +242,7 @@ def nova_docstring_one_line(physical_line):
     """
     pos = max([physical_line.find(i) for i in DOCSTRING_TRIPLE])  # start
     end = max([physical_line[-4:-1] == i for i in DOCSTRING_TRIPLE])  # end
-    if (pos != -1  and end and len(physical_line) > pos + 4):
+    if (pos != -1 and end and len(physical_line) > pos + 4):
         if (physical_line[-5] != '.'):
             return pos, "NOVA N402: one line docstring needs a period"
 

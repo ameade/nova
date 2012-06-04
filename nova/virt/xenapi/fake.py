@@ -151,7 +151,7 @@ def create_vdi(name_label, sr_ref, **kwargs):
         'sharable': False,
         'other_config': {},
         'location': '',
-        'xenstore_data': '',
+        'xenstore_data': {},
         'sm_config': {},
         'physical_utilisation': '123',
         'managed': True,
@@ -161,10 +161,10 @@ def create_vdi(name_label, sr_ref, **kwargs):
     return _create_object('VDI', vdi_rec)
 
 
-def create_vbd(vm_ref, vdi_ref):
+def create_vbd(vm_ref, vdi_ref, userdevice=0):
     vbd_rec = {'VM': vm_ref,
                'VDI': vdi_ref,
-               'userdevice': '0',
+               'userdevice': str(userdevice),
                'currently_attached': False}
     vbd_ref = _create_object('VBD', vbd_rec)
     after_VBD_create(vbd_ref, vbd_rec)
@@ -321,7 +321,7 @@ def get_record(table, ref):
 
 def check_for_session_leaks():
     if len(_db_content['session']) > 0:
-        raise exception.Error('Sessions have leaked: %s' %
+        raise exception.NovaException('Sessions have leaked: %s' %
                               _db_content['session'])
 
 
@@ -442,13 +442,14 @@ class SessionBase(object):
         return _db_content['PIF']
 
     def VM_get_xenstore_data(self, _1, vm_ref):
-        return _db_content['VM'][vm_ref].get('xenstore_data', '')
+        return _db_content['VM'][vm_ref].get('xenstore_data', {})
 
     def VM_remove_from_xenstore_data(self, _1, vm_ref, key):
         db_ref = _db_content['VM'][vm_ref]
         if not 'xenstore_data' in db_ref:
             return
-        db_ref['xenstore_data'][key] = None
+        if key in db_ref['xenstore_data']:
+            del db_ref['xenstore_data'][key]
 
     def VM_add_to_xenstore_data(self, _1, vm_ref, key, value):
         db_ref = _db_content['VM'][vm_ref]
@@ -460,7 +461,8 @@ class SessionBase(object):
         db_ref = _db_content['VDI'][vdi_ref]
         if not 'other_config' in db_ref:
             return
-        db_ref['other_config'][key] = None
+        if key in db_ref['other_config']:
+            del db_ref['other_config'][key]
 
     def VDI_add_to_other_config(self, _1, vdi_ref, key, value):
         db_ref = _db_content['VDI'][vdi_ref]
@@ -583,7 +585,7 @@ class SessionBase(object):
         s = self._session
         self._session = None
         if s not in _db_content['session']:
-            raise exception.Error(
+            raise exception.NovaException(
                 "Logging out a session that is invalid or already logged "
                 "out: %s" % s)
         del _db_content['session'][s]
@@ -610,6 +612,9 @@ class SessionBase(object):
         if self._is_gettersetter(name, True):
             LOG.debug(_('Calling getter %s'), name)
             return lambda *params: self._getter(name, params)
+        elif self._is_gettersetter(name, False):
+            LOG.debug(_('Calling setter %s'), name)
+            return lambda *params: self._setter(name, params)
         elif self._is_create(name):
             return lambda *params: self._create(name, params)
         elif self._is_destroy(name):
@@ -683,6 +688,7 @@ class SessionBase(object):
             if (ref in _db_content[cls] and
                 field in _db_content[cls][ref]):
                 _db_content[cls][ref][field] = val
+                return
 
         LOG.debug(_('Raising NotImplemented'))
         raise NotImplementedError(

@@ -23,8 +23,8 @@ from nova import context
 from nova import exception
 from nova import flags
 from nova import log as logging
-from nova import test
 from nova.rpc import amqp as rpc_amqp
+from nova import test
 from nova.tests.rpc import common
 
 try:
@@ -100,6 +100,31 @@ class RpcKombuTestCase(common.BaseRpcAMQPTestCase):
         conn.close()
 
         self.assertEqual(self.received_message, message)
+
+    @test.skip_if(kombu is None, "Test requires kombu")
+    def test_topic_multiple_queues(self):
+        """Test sending to a topic exchange with multiple queues"""
+
+        conn = self.rpc.create_connection(FLAGS)
+        message = 'topic test message'
+
+        self.received_message_1 = None
+        self.received_message_2 = None
+
+        def _callback1(message):
+            self.received_message_1 = message
+
+        def _callback2(message):
+            self.received_message_2 = message
+
+        conn.declare_topic_consumer('a_topic', _callback1, queue_name='queue1')
+        conn.declare_topic_consumer('a_topic', _callback2, queue_name='queue2')
+        conn.topic_send('a_topic', message)
+        conn.consume(limit=2)
+        conn.close()
+
+        self.assertEqual(self.received_message_1, message)
+        self.assertEqual(self.received_message_2, message)
 
     @test.skip_if(kombu is None, "Test requires kombu")
     def test_direct_send_receive(self):

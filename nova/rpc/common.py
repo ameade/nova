@@ -18,20 +18,42 @@
 #    under the License.
 
 import copy
+import logging
 import sys
 import traceback
 
-from nova import exception
-from nova import log as logging
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
-from nova import utils
+from nova.openstack.common import jsonutils
+from nova.openstack.common import local
 
 
 LOG = logging.getLogger(__name__)
 
 
-class RemoteError(exception.NovaException):
+class RPCException(Exception):
+    message = _("An unknown RPC related exception occurred.")
+
+    def __init__(self, message=None, **kwargs):
+        self.kwargs = kwargs
+
+        if not message:
+            try:
+                message = self.message % kwargs
+
+            except Exception as e:
+                # kwargs doesn't match a variable in the message
+                # log the issue and the kwargs
+                LOG.exception(_('Exception in string format operation'))
+                for name, value in kwargs.iteritems():
+                    LOG.error("%s: %s" % (name, value))
+                # at least get the core message out if something happened
+                message = self.message
+
+        super(RPCException, self).__init__(message)
+
+
+class RemoteError(RPCException):
     """Signifies that a remote class has raised an exception.
 
     Contains a string representation of the type of the original exception,
@@ -51,13 +73,22 @@ class RemoteError(exception.NovaException):
                                           traceback=traceback)
 
 
-class Timeout(exception.NovaException):
+class Timeout(RPCException):
     """Signifies that a timeout has occurred.
 
     This exception is raised if the rpc_response_timeout is reached while
     waiting for a response from the remote side.
     """
     message = _("Timeout while waiting on RPC response.")
+
+
+class InvalidRPCConnectionReuse(RPCException):
+    message = _("Invalid reuse of an RPC connection.")
+
+
+class UnsupportedRpcVersion(RPCException):
+    message = _("Specified RPC version, %(version)s, not supported by "
+                "this endpoint.")
 
 
 class Connection(object):
@@ -98,6 +129,25 @@ class Connection(object):
         :param fanout: Whether or not this is a fanout topic.  See the
                        documentation for the topic parameter for some
                        additional comments on this.
+        """
+        raise NotImplementedError()
+
+    def create_worker(self, conf, topic, proxy, pool_name):
+        """Create a worker on this connection.
+
+        A worker is like a regular consumer of messages directed to a
+        topic, except that it is part of a set of such consumers (the
+        "pool") which may run in parallel. Every pool of workers will
+        receive a given message, but only one worker in the pool will
+        be asked to process it. Load is distributed across the members
+        of the pool in round-robin fashion.
+
+        :param conf:  An openstack.common.cfg configuration object.
+        :param topic: This is a name associated with what to consume from.
+                      Multiple instances of a service may consume from the same
+                      topic.
+        :param proxy: The object that will handle all incoming messages.
+        :param pool_name: String containing the name of the pool of workers
         """
         raise NotImplementedError()
 
@@ -174,13 +224,13 @@ def serialize_remote_exception(failure_info):
         'kwargs': kwargs
     }
 
-    json_data = utils.dumps(data)
+    json_data = jsonutils.dumps(data)
 
     return json_data
 
 
 def deserialize_remote_exception(conf, data):
-    failure = utils.loads(str(data))
+    failure = jsonutils.loads(str(data))
 
     trace = failure.get('tb', [])
     message = failure.get('message', "") + "\n" + "\n".join(trace)
@@ -205,7 +255,7 @@ def deserialize_remote_exception(conf, data):
     ex_type = type(failure)
     str_override = lambda self: message
     new_ex_type = type(ex_type.__name__ + "_Remote", (ex_type,),
-                       {'__str__': str_override})
+                       {'__str__': str_override, '__unicode__': str_override})
     try:
         # NOTE(ameade): Dynamically create a new exception type and swap it in
         # as the new type for the exception. This only works on user defined
@@ -218,3 +268,49 @@ def deserialize_remote_exception(conf, data):
         # first exception argument.
         failure.args = (message,) + failure.args[1:]
     return failure
+
+
+class CommonRpcContext(object):
+    def __init__(self, **kwargs):
+        self.values = kwargs
+
+    def __getattr__(self, key):
+        try:
+            return self.values[key]
+        except KeyError:
+            raise AttributeError(key)
+
+    def to_dict(self):
+        return copy.deepcopy(self.values)
+
+    @classmethod
+    def from_dict(cls, values):
+        return cls(**values)
+
+    def deepcopy(self):
+        return self.from_dict(self.to_dict())
+
+    def update_store(self):
+        local.store.context = self
+
+    def elevated(self, read_deleted=None, overwrite=False):
+        """Return a version of this context with admin flag set."""
+        # TODO(russellb) This method is a bit of a nova-ism.  It makes
+        # some assumptions about the data in the request context sent
+        # across rpc, while the rest of this class does not.  We could get
+        # rid of this if we changed the nova code that uses this to
+        # convert the RpcContext back to its native RequestContext doing
+        # something like nova.context.RequestContext.from_dict(ctxt.to_dict())
+
+        context = self.deepcopy()
+        context.values['is_admin'] = True
+
+        context.values.setdefault('roles', [])
+
+        if 'admin' not in context.values['roles']:
+            context.values['roles'].append('admin')
+
+        if read_deleted is not None:
+            context.values['read_deleted'] = read_deleted
+
+        return context

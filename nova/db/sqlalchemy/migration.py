@@ -18,7 +18,6 @@
 
 import distutils.version as dist_version
 import os
-import sys
 
 from nova.db import migration
 from nova.db.sqlalchemy.session import get_engine
@@ -27,9 +26,9 @@ from nova import flags
 from nova import log as logging
 
 
-import sqlalchemy
 import migrate
 from migrate.versioning import util as migrate_util
+import sqlalchemy
 
 
 LOG = logging.getLogger(__name__)
@@ -72,7 +71,7 @@ def db_sync(version=None):
         try:
             version = int(version)
         except ValueError:
-            raise exception.Error(_("version should be an integer"))
+            raise exception.NovaException(_("version should be an integer"))
 
     current_version = db_version()
     repository = _find_migrate_repo()

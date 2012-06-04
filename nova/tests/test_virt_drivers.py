@@ -120,11 +120,6 @@ class _VirtDriverTestCase(test.TestCase):
         self.assertEquals(ip.version, 4)
 
     @catch_notimplementederror
-    def test_resize_running(self):
-        instance_ref, network_info = self._get_running_instance()
-        self.connection.resize(instance_ref, 7)
-
-    @catch_notimplementederror
     def test_set_admin_password(self):
         instance_ref, network_info = self._get_running_instance()
         self.connection.set_admin_password(instance_ref, 'p4ssw0rd')
@@ -165,10 +160,6 @@ class _VirtDriverTestCase(test.TestCase):
     @catch_notimplementederror
     def test_poll_rescued_instances(self):
         self.connection.poll_rescued_instances(10)
-
-    @catch_notimplementederror
-    def test_poll_unconfirmed_resizes(self):
-        self.connection.poll_unconfirmed_resizes(10)
 
     @catch_notimplementederror
     def test_migrate_disk_and_power_off(self):
@@ -263,16 +254,6 @@ class _VirtDriverTestCase(test.TestCase):
     def test_get_diagnostics(self):
         instance_ref, network_info = self._get_running_instance()
         self.connection.get_diagnostics(instance_ref['name'])
-
-    @catch_notimplementederror
-    def test_list_disks(self):
-        instance_ref, network_info = self._get_running_instance()
-        self.connection.list_disks(instance_ref['name'])
-
-    @catch_notimplementederror
-    def test_list_interfaces(self):
-        instance_ref, network_info = self._get_running_instance()
-        self.connection.list_interfaces(instance_ref['name'])
 
     @catch_notimplementederror
     def test_block_stats(self):
@@ -440,8 +421,8 @@ class LibvirtConnTestCase(_VirtDriverTestCase):
         else:
             self.saved_libvirt = None
 
-        import fakelibvirt
         import fake_libvirt_utils
+        import fakelibvirt
 
         sys.modules['libvirt'] = fakelibvirt
 

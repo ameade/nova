@@ -28,8 +28,8 @@ import re
 from nova import exception
 from nova import flags
 from nova import log as logging
-from nova import utils
 from nova.openstack.common import cfg
+from nova import utils
 from nova.virt import images
 
 
@@ -87,7 +87,7 @@ def create_cow_image(backing_file, path):
     :param path: Desired location of the COW image
     """
     execute('qemu-img', 'create', '-f', 'qcow2', '-o',
-             'cluster_size=2M,backing_file=%s' % backing_file, path)
+             'backing_file=%s' % backing_file, path)
 
 
 def get_disk_size(path):
@@ -110,10 +110,18 @@ def get_disk_backing_file(path):
     :returns: a path to the image's backing store
     """
     out, err = execute('qemu-img', 'info', path)
-    backing_file = [i.split('actual path:')[1].strip()[:-1]
-        for i in out.split('\n') if 0 <= i.find('backing file')]
+    backing_file = None
+
+    for line in out.split('\n'):
+        if line.startswith('backing file: '):
+            if 'actual path: ' in line:
+                backing_file = line.split('actual path: ')[1][:-1]
+            else:
+                backing_file = line.split('backing file: ')[1]
+            break
     if backing_file:
-        backing_file = os.path.basename(backing_file[0])
+        backing_file = os.path.basename(backing_file)
+
     return backing_file
 
 
@@ -342,7 +350,19 @@ def read_stored_info(base_path, field=None):
 
     info_file = get_info_filename(base_path)
     if not os.path.exists(info_file):
-        d = {}
+        # Special case to handle essex checksums being converted
+        old_filename = base_path + '.sha1'
+        if field == 'sha1' and os.path.exists(old_filename):
+            hash_file = open(old_filename)
+            hash_value = hash_file.read()
+            hash_file.close()
+
+            write_stored_info(base_path, field=field, value=hash_value)
+            os.remove(old_filename)
+            d = {field: hash_value}
+
+        else:
+            d = {}
 
     else:
         LOG.info(_('Reading image info file: %s'), info_file)

@@ -32,10 +32,10 @@ from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
+from nova.virt.vmwareapi import network_utils
 from nova.virt.vmwareapi import vim_util
 from nova.virt.vmwareapi import vm_util
 from nova.virt.vmwareapi import vmware_images
-from nova.virt.vmwareapi import network_utils
 
 
 vmware_vif_driver_opt = cfg.StrOpt('vmware_vif_driver',
@@ -125,7 +125,7 @@ class VMWareVMOps(object):
             if data_store_name is None:
                 msg = _("Couldn't get a local Datastore reference")
                 LOG.error(msg, instance=instance)
-                raise exception.Error(msg)
+                raise exception.NovaException(msg)
 
         data_store_name = _get_datastore_ref()
 
@@ -793,7 +793,7 @@ class VMWareVMOps(object):
             task_info = self._session._call_method(vim_util,
                                        "get_dynamic_property",
                                        search_task, "Task", "info")
-            if task_info.state in  ['queued', 'running']:
+            if task_info.state in ['queued', 'running']:
                 time.sleep(2)
                 continue
             break
@@ -825,9 +825,9 @@ class VMWareVMOps(object):
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
         for (network, mapping) in network_info:
-            self._vif_driver.plug(instance, network, mapping)
+            self._vif_driver.plug(instance, (network, mapping))
 
     def _unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
         for (network, mapping) in network_info:
-            self._vif_driver.unplug(instance, network, mapping)
+            self._vif_driver.unplug(instance, (network, mapping))

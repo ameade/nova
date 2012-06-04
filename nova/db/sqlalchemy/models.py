@@ -247,7 +247,7 @@ class Instance(BASE, NovaBase):
     display_name = Column(String(255))
     display_description = Column(String(255))
 
-    # To remember on which host a instance booted.
+    # To remember on which host an instance booted.
     # An instance may have moved to another host by live migraiton.
     launched_on = Column(Text)
     locked = Column(Boolean)
@@ -300,15 +300,6 @@ class InstanceInfoCache(BASE, NovaBase):
                             primaryjoin=instance_id == Instance.uuid)
 
 
-class InstanceActions(BASE, NovaBase):
-    """Represents a guest VM's actions and results"""
-    __tablename__ = "instance_actions"
-    id = Column(Integer, primary_key=True)
-    instance_uuid = Column(String(36), ForeignKey('instances.uuid'))
-    action = Column(String(255))
-    error = Column(Text)
-
-
 class InstanceTypes(BASE, NovaBase):
     """Represent possible instance_types or flavor of VM offered"""
     __tablename__ = "instance_types"
@@ -328,8 +319,7 @@ class InstanceTypes(BASE, NovaBase):
                            foreign_keys=id,
                            primaryjoin='and_('
                                'Instance.instance_type_id == '
-                               'InstanceTypes.id, '
-                               'InstanceTypes.deleted == False)')
+                               'InstanceTypes.id)')
 
 
 class Volume(BASE, NovaBase):
@@ -350,14 +340,9 @@ class Volume(BASE, NovaBase):
     host = Column(String(255))  # , ForeignKey('hosts.id'))
     size = Column(Integer)
     availability_zone = Column(String(255))  # TODO(vish): foreign key?
-    instance_id = Column(Integer, ForeignKey('instances.id'), nullable=True)
-    instance = relationship(Instance,
-                            backref=backref('volumes'),
-                            foreign_keys=instance_id,
-                            primaryjoin='and_(Volume.instance_id==Instance.id,'
-                                             'Volume.deleted==False)')
+    instance_uuid = Column(String(36))
     mountpoint = Column(String(255))
-    attach_time = Column(String(255))  # TODO(vish): datetime
+    attach_time = Column(DateTime)
     status = Column(String(255))  # TODO(vish): enum?
     attach_status = Column(String(255))  # TODO(vish): enum
 
@@ -453,6 +438,49 @@ class QuotaClass(BASE, NovaBase):
     hard_limit = Column(Integer, nullable=True)
 
 
+class QuotaUsage(BASE, NovaBase):
+    """Represents the current usage for a given resource."""
+
+    __tablename__ = 'quota_usages'
+    id = Column(Integer, primary_key=True)
+
+    project_id = Column(String(255), index=True)
+    resource = Column(String(255))
+
+    in_use = Column(Integer)
+    reserved = Column(Integer)
+
+    @property
+    def total(self):
+        return self.in_use + self.reserved
+
+    until_refresh = Column(Integer, nullable=True)
+
+
+class Reservation(BASE, NovaBase):
+    """Represents a resource reservation for quotas."""
+
+    __tablename__ = 'reservations'
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String(36), nullable=False)
+
+    usage_id = Column(Integer, ForeignKey('quota_usages.id'), nullable=False)
+    # NOTE(dprince): Force innerjoin below for lockmode update on PostgreSQL
+    usage = relationship(QuotaUsage,
+                         backref=backref('reservations'),
+                         foreign_keys=usage_id,
+                         innerjoin=True,
+                         primaryjoin='and_('
+                              'Reservation.usage_id == QuotaUsage.id,'
+                              'Reservation.deleted == False)')
+
+    project_id = Column(String(255), index=True)
+    resource = Column(String(255))
+
+    delta = Column(Integer)
+    expire = Column(DateTime, nullable=False)
+
+
 class Snapshot(BASE, NovaBase):
     """Represents a block storage device that can be attached to a vm."""
     __tablename__ = 'snapshots'
@@ -504,15 +532,9 @@ class BlockDeviceMapping(BASE, NovaBase):
     # for ephemeral device
     virtual_name = Column(String(255), nullable=True)
 
-    # for snapshot or volume
-    snapshot_id = Column(String(36), ForeignKey('snapshots.id'))
-    # outer join
-    snapshot = relationship(Snapshot,
-                            foreign_keys=snapshot_id)
+    snapshot_id = Column(String(36))
 
-    volume_id = Column(String(36), ForeignKey('volumes.id'), nullable=True)
-    volume = relationship(Volume,
-                          foreign_keys=volume_id)
+    volume_id = Column(String(36), nullable=True)
     volume_size = Column(Integer, nullable=True)
 
     # for no device to suppress devices.
@@ -696,7 +718,7 @@ class FixedIp(BASE, NovaBase):
     virtual_interface_id = Column(Integer, nullable=True)
     instance_id = Column(Integer, nullable=True)
     # associated means that a fixed_ip has its instance_id column set
-    # allocated means that a fixed_ip has a its virtual_interface_id column set
+    # allocated means that a fixed_ip has its virtual_interface_id column set
     allocated = Column(Boolean, default=False)
     # leased means dhcp bridge has leased the ip
     leased = Column(Boolean, default=False)
@@ -831,7 +853,7 @@ class Console(BASE, NovaBase):
 
 
 class InstanceMetadata(BASE, NovaBase):
-    """Represents a metadata key/value pair for an instance"""
+    """Represents a user-provided metadata key/value pair for an instance"""
     __tablename__ = 'instance_metadata'
     id = Column(Integer, primary_key=True)
     key = Column(String(255))
@@ -842,6 +864,23 @@ class InstanceMetadata(BASE, NovaBase):
                             primaryjoin='and_('
                                 'InstanceMetadata.instance_id == Instance.id,'
                                 'InstanceMetadata.deleted == False)')
+
+
+class InstanceSystemMetadata(BASE, NovaBase):
+    """Represents a system-owned metadata key/value pair for an instance"""
+    __tablename__ = 'instance_system_metadata'
+    id = Column(Integer, primary_key=True)
+    key = Column(String(255))
+    value = Column(String(255))
+    instance_uuid = Column(String(36),
+                           ForeignKey('instances.uuid'),
+                           nullable=False)
+
+    primary_join = ('and_(InstanceSystemMetadata.instance_uuid == '
+                    'Instance.uuid, InstanceSystemMetadata.deleted == False)')
+    instance = relationship(Instance, backref="system_metadata",
+                            foreign_keys=instance_uuid,
+                            primaryjoin=primary_join)
 
 
 class InstanceTypeExtraSpecs(BASE, NovaBase):
@@ -1012,52 +1051,3 @@ class InstanceFault(BASE, NovaBase):
     code = Column(Integer(), nullable=False)
     message = Column(String(255))
     details = Column(Text)
-
-
-def register_models():
-    """Register Models and create metadata.
-
-    Called from nova.db.sqlalchemy.__init__ as part of loading the driver,
-    it will never need to be called explicitly elsewhere unless the
-    connection is lost and needs to be reestablished.
-    """
-    from sqlalchemy import create_engine
-    models = (AgentBuild,
-              Aggregate,
-              AggregateHost,
-              AggregateMetadata,
-              AuthToken,
-              Certificate,
-              Cell,
-              Console,
-              ConsolePool,
-              FixedIp,
-              FloatingIp,
-              Instance,
-              InstanceActions,
-              InstanceFault,
-              InstanceMetadata,
-              InstanceTypeExtraSpecs,
-              InstanceTypes,
-              IscsiTarget,
-              Migration,
-              Network,
-              Project,
-              SecurityGroup,
-              SecurityGroupIngressRule,
-              SecurityGroupInstanceAssociation,
-              Service,
-              SMBackendConf,
-              SMFlavors,
-              SMVolume,
-              User,
-              Volume,
-              VolumeMetadata,
-              VolumeTypeExtraSpecs,
-              VolumeTypes,
-              VolumeIdMapping,
-              SnapshotIdMapping,
-              )
-    engine = create_engine(FLAGS.sql_connection, echo=False)
-    for model in models:
-        model.metadata.create_all(engine)

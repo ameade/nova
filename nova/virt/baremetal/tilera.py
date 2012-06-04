@@ -27,10 +27,10 @@ import subprocess
 import time
 
 from nova.compute import power_state
-from nova.openstack.common import cfg
 from nova import exception
 from nova import flags
 from nova import log as logging
+from nova.openstack.common import cfg
 from nova import utils
 
 FLAGS = flags.FLAGS
@@ -325,7 +325,7 @@ class BareMetalNodes(object):
             return power_state.RUNNING
         except Exception as ex:
             self.deactivate_node(node_id)
-            raise exception.Error(_("Node is unknown error state."))
+            raise exception.NovaException(_("Node is unknown error state."))
 
     def get_console_output(self, console_log, node_id):
         """

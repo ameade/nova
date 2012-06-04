@@ -80,6 +80,7 @@ from nova.api.ec2 import ec2utils
 from nova.auth import manager
 from nova.compat import flagfile
 from nova.compute import instance_types
+from nova.compute import rpcapi as compute_rpcapi
 from nova import context
 from nova import crypto
 from nova import db
@@ -87,9 +88,11 @@ from nova.db import migration
 from nova import exception
 from nova import flags
 from nova import log as logging
+from nova.openstack.common import cfg
 from nova.openstack.common import importutils
 from nova import quota
 from nova import rpc
+from nova.scheduler import rpcapi as scheduler_rpcapi
 from nova import utils
 from nova import version
 from nova.volume import volume_types
@@ -103,6 +106,8 @@ flags.DECLARE('vlan_start', 'nova.network.manager')
 flags.DECLARE('vpn_start', 'nova.network.manager')
 flags.DECLARE('default_floating_pool', 'nova.network.manager')
 flags.DECLARE('public_interface', 'nova.network.linux_net')
+
+QUOTAS = quota.QUOTAS
 
 
 # Decorators for actions
@@ -460,7 +465,7 @@ class ProjectCommands(object):
     @args('--file', dest="filename", metavar='<filename>',
             help='File name(Default: novarc)')
     def environment(self, project_id, user_id, filename='novarc'):
-        """Exports environment variables to an sourcable file"""
+        """Exports environment variables to a sourceable file"""
         try:
             rc = self.manager.get_environment_rc(user_id, project_id)
         except (exception.UserNotFound, exception.ProjectNotFound) as ex:
@@ -492,11 +497,11 @@ class ProjectCommands(object):
                 db.quota_update(ctxt, project_id, key, value)
             except exception.ProjectQuotaNotFound:
                 db.quota_create(ctxt, project_id, key, value)
-        project_quota = quota.get_project_quotas(ctxt, project_id)
+        project_quota = QUOTAS.get_project_quotas(ctxt, project_id)
         for key, value in project_quota.iteritems():
-            if value is None:
-                value = 'unlimited'
-            print '%s: %s' % (key, value)
+            if value['limit'] < 0 or value['limit'] is None:
+                value['limit'] = 'unlimited'
+            print '%s: %s' % (key, value['limit'])
 
     @args('--project', dest="project_id", metavar='<Project name>',
             help='Project name')
@@ -589,8 +594,8 @@ class FixedIpCommands(object):
                     hostname = instance['hostname']
                     host = instance['host']
                 else:
-                    print 'WARNING: fixed ip %s allocated to missing' \
-                    ' instance' % str(fixed_ip['address'])
+                    print ('WARNING: fixed ip %s allocated to missing'
+                           ' instance' % str(fixed_ip['address']))
             print "%-18s\t%-15s\t%-15s\t%s" % (
                     network['cidr'],
                     fixed_ip['address'],
@@ -630,7 +635,7 @@ class FloatingIpCommands(object):
     @staticmethod
     def address_to_hosts(addresses):
         """
-        Iterate over hosts within a address range.
+        Iterate over hosts within an address range.
 
         If an explicit range specifier is missing, the parameter is
         interpreted as a specific individual address.
@@ -756,8 +761,8 @@ class NetworkCommands(object):
             if FLAGS.network_manager in bridge_required:
                 raise exception.NetworkNotCreated(req='--bridge')
 
-        bridge_interface = bridge_interface or FLAGS.flat_interface or \
-                           FLAGS.vlan_interface
+        bridge_interface = (bridge_interface or FLAGS.flat_interface or
+                            FLAGS.vlan_interface)
         if not bridge_interface:
             interface_required = ['nova.network.manager.VlanManager']
             if FLAGS.network_manager in interface_required:
@@ -869,8 +874,8 @@ class NetworkCommands(object):
             if uuid is None:
                 raise Exception("UUID is required to delete Quantum Networks")
             if fixed_range:
-                raise Exception("Deleting by fixed_range is not supported " \
-                    "with the QuantumManager")
+                raise Exception("Deleting by fixed_range is not supported "
+                                "with the QuantumManager")
         # delete the network
         net_manager.delete_network(context.get_admin_context(),
             fixed_range, uuid)
@@ -916,20 +921,19 @@ class VmCommands(object):
     def list(self, host=None):
         """Show a list of all instances"""
 
-        print "%-10s %-15s %-10s %-10s %-26s %-9s %-9s %-9s" \
-              "  %-10s %-10s %-10s %-5s" % (
-            _('instance'),
-            _('node'),
-            _('type'),
-            _('state'),
-            _('launched'),
-            _('image'),
-            _('kernel'),
-            _('ramdisk'),
-            _('project'),
-            _('user'),
-            _('zone'),
-            _('index'))
+        print ("%-10s %-15s %-10s %-10s %-26s %-9s %-9s %-9s"
+               "  %-10s %-10s %-10s %-5s" % (_('instance'),
+                                             _('node'),
+                                             _('type'),
+                                             _('state'),
+                                             _('launched'),
+                                             _('image'),
+                                             _('kernel'),
+                                             _('ramdisk'),
+                                             _('project'),
+                                             _('user'),
+                                             _('zone'),
+                                             _('index')))
 
         if host is None:
             instances = db.instance_get_all(context.get_admin_context())
@@ -938,20 +942,19 @@ class VmCommands(object):
                            context.get_admin_context(), host)
 
         for instance in instances:
-            print "%-10s %-15s %-10s %-10s %-26s %-9s %-9s %-9s" \
-                  "  %-10s %-10s %-10s %-5d" % (
-                instance['display_name'],
-                instance['host'],
-                instance['instance_type'].name,
-                instance['vm_state'],
-                instance['launched_at'],
-                instance['image_ref'],
-                instance['kernel_id'],
-                instance['ramdisk_id'],
-                instance['project_id'],
-                instance['user_id'],
-                instance['availability_zone'],
-                instance['launch_index'])
+            print ("%-10s %-15s %-10s %-10s %-26s %-9s %-9s %-9s"
+                   " %-10s %-10s %-10s %-5d" % (instance['display_name'],
+                                                instance['host'],
+                                                instance['instance_type'].name,
+                                                instance['vm_state'],
+                                                instance['launched_at'],
+                                                instance['image_ref'],
+                                                instance['kernel_id'],
+                                                instance['ramdisk_id'],
+                                                instance['project_id'],
+                                                instance['user_id'],
+                                                instance['availability_zone'],
+                                                instance['launch_index']))
 
 
 class ServiceCommands(object):
@@ -1021,10 +1024,9 @@ class ServiceCommands(object):
         :param host: hostname.
 
         """
-        result = rpc.call(context.get_admin_context(),
-                     FLAGS.scheduler_topic,
-                     {"method": "show_host_resources",
-                      "args": {"host": host}})
+        rpcapi = scheduler_rpcapi.SchedulerAPI()
+        result = rpcapi.show_host_resources(context.get_admin_context(),
+                                            host=host)
 
         if not isinstance(result, dict):
             print _('An unexpected error has occurred.')
@@ -1037,17 +1039,17 @@ class ServiceCommands(object):
                                                          "c": _('cpu'),
                                                          "d": _('mem(mb)'),
                                                          "e": _('hdd')}
-            print '%(a)-16s(total)%(b)26s%(c)8s%(d)8s' %\
-                              {"a": host,
-                               "b": result['resource']['vcpus'],
-                               "c": result['resource']['memory_mb'],
-                               "d": result['resource']['local_gb']}
+            print ('%(a)-16s(total)%(b)26s%(c)8s%(d)8s' %
+                   {"a": host,
+                    "b": result['resource']['vcpus'],
+                    "c": result['resource']['memory_mb'],
+                    "d": result['resource']['local_gb']})
 
-            print '%(a)-16s(used_now)%(b)23s%(c)8s%(d)8s' %\
-                              {"a": host,
-                               "b": result['resource']['vcpus_used'],
-                               "c": result['resource']['memory_mb_used'],
-                               "d": result['resource']['local_gb_used']}
+            print ('%(a)-16s(used_now)%(b)23s%(c)8s%(d)8s' %
+                   {"a": host,
+                    "b": result['resource']['vcpus_used'],
+                    "c": result['resource']['memory_mb_used'],
+                    "d": result['resource']['local_gb_used']})
 
             # Printing a used_max
             cpu_sum = 0
@@ -1118,9 +1120,9 @@ class VersionCommands(object):
         pass
 
     def list(self):
-        print _("%(version)s (%(vcs)s)") % \
-                {'version': version.version_string(),
-                 'vcs': version.version_string_with_vcs()}
+        print (_("%(version)s (%(vcs)s)") %
+               {'version': version.version_string(),
+                'vcs': version.version_string_with_vcs()})
 
     def __call__(self):
         self.list()
@@ -1150,7 +1152,7 @@ class VolumeCommands(object):
             return
 
         rpc.cast(ctxt,
-                 db.queue_get_for(ctxt, FLAGS.volume_topic, host),
+                 rpc.queue_get_for(ctxt, FLAGS.volume_topic, host),
                  {"method": "delete_volume",
                   "args": {"volume_id": volume['id']}})
 
@@ -1166,13 +1168,9 @@ class VolumeCommands(object):
             print "volume is not attached to an instance"
             return
         instance = db.instance_get(ctxt, volume['instance_id'])
-        host = instance['host']
-        rpc.cast(ctxt,
-                 db.queue_get_for(ctxt, FLAGS.compute_topic, host),
-                 {"method": "attach_volume",
-                  "args": {"instance_id": instance['id'],
-                           "volume_id": volume['id'],
-                           "mountpoint": volume['mountpoint']}})
+        rpcapi = compute_rpcapi.ComputeAPI()
+        rpcapi.attach_volume(ctxt, instance, volume['id'],
+                             volume['mountpoint'])
 
 
 class InstanceTypeCommands(object):
@@ -1666,31 +1664,29 @@ def methods_of(obj):
 
 def main():
     """Parse options and call the appropriate class/method."""
-    flagfile = utils.default_flagfile()
-
-    if flagfile and not os.access(flagfile, os.R_OK):
-        st = os.stat(flagfile)
-        print "Could not read %s. Re-running with sudo" % flagfile
-        try:
-            os.execvp('sudo', ['sudo', '-u', '#%s' % st.st_uid] + sys.argv)
-        except Exception:
-            print 'sudo failed, continuing as if nothing happened'
-
     rpc.register_opts(FLAGS)
 
     try:
-        argv = FLAGS(sys.argv)
+        argv = flags.parse_args(sys.argv)
         logging.setup()
-    except IOError, e:
-        if e.errno == errno.EACCES:
-            print _('Please re-run nova-manage as root.')
-            sys.exit(2)
-        raise
+    except cfg.ConfigFilesNotFoundError:
+        cfgfile = FLAGS.config_file[-1] if FLAGS.config_file else None
+        if cfgfile and not os.access(cfgfile, os.R_OK):
+            st = os.stat(cfgfile)
+            print _("Could not read %s. Re-running with sudo") % cfgfile
+            try:
+                os.execvp('sudo', ['sudo', '-u', '#%s' % st.st_uid] + sys.argv)
+            except Exception:
+                print _('sudo failed, continuing as if nothing happened')
+
+        print _('Please re-run nova-manage as root.')
+        sys.exit(2)
+
     script_name = argv.pop(0)
     if len(argv) < 1:
-        print _("\nOpenStack Nova version: %(version)s (%(vcs)s)\n") % \
-                {'version': version.version_string(),
-                 'vcs': version.version_string_with_vcs()}
+        print (_("\nOpenStack Nova version: %(version)s (%(vcs)s)\n") %
+               {'version': version.version_string(),
+                'vcs': version.version_string_with_vcs()})
         print script_name + " category action [<args>]"
         print _("Available categories:")
         for k, _v in CATEGORIES:

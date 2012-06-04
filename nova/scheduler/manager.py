@@ -29,10 +29,12 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 from nova import manager
+from nova import notifications
 from nova.notifier import api as notifier
 from nova.openstack.common import cfg
 from nova.openstack.common import excutils
 from nova.openstack.common import importutils
+from nova import quota
 
 
 LOG = logging.getLogger(__name__)
@@ -44,9 +46,13 @@ scheduler_driver_opt = cfg.StrOpt('scheduler_driver',
 FLAGS = flags.FLAGS
 FLAGS.register_opt(scheduler_driver_opt)
 
+QUOTAS = quota.QUOTAS
+
 
 class SchedulerManager(manager.Manager):
     """Chooses a host to run instances on."""
+
+    RPC_API_VERSION = '1.0'
 
     def __init__(self, scheduler_driver=None, *args, **kwargs):
         if not scheduler_driver:
@@ -56,6 +62,9 @@ class SchedulerManager(manager.Manager):
 
     def __getattr__(self, key):
         """Converts all method calls to use the schedule method"""
+        # NOTE(russellb) Because of what this is doing, we must be careful
+        # when changing the API of the scheduler drivers, as that changes
+        # the rpc API as well, and the version should be updated accordingly.
         return functools.partial(self._schedule, key)
 
     def get_host_list(self, context):
@@ -102,18 +111,24 @@ class SchedulerManager(manager.Manager):
         Sets instance vm_state to ERROR on exceptions
         """
         args = (context,) + args
+        reservations = kwargs.get('reservations', None)
         try:
-            return self.driver.schedule_run_instance(*args, **kwargs)
+            result = self.driver.schedule_run_instance(*args, **kwargs)
+            return result
         except exception.NoValidHost as ex:
             # don't reraise
             self._set_vm_state_and_notify('run_instance',
                                          {'vm_state': vm_states.ERROR},
                                           context, ex, *args, **kwargs)
+            if reservations:
+                QUOTAS.rollback(context, reservations)
         except Exception as ex:
             with excutils.save_and_reraise_exception():
                 self._set_vm_state_and_notify('run_instance',
                                              {'vm_state': vm_states.ERROR},
                                              context, ex, *args, **kwargs)
+                if reservations:
+                    QUOTAS.rollback(context, reservations)
 
     def prep_resize(self, context, topic, *args, **kwargs):
         """Tries to call schedule_prep_resize on the driver.
@@ -159,7 +174,12 @@ class SchedulerManager(manager.Manager):
             state = vm_state.upper()
             LOG.warning(_('Setting instance to %(state)s state.'), locals(),
                         instance_uuid=instance_uuid)
-            db.instance_update(context, instance_uuid, updates)
+
+            # update instance state and notify on the transition
+            (old_ref, new_ref) = db.instance_update_and_get_original(context,
+                    instance_uuid, updates)
+            notifications.send_update(context, old_ref, new_ref,
+                    service="scheduler")
 
         payload = dict(request_spec=request_spec,
                        instance_properties=properties,
@@ -228,3 +248,7 @@ class SchedulerManager(manager.Manager):
                                  'ephemeral_gb': sum(ephemeral)}
 
         return {'resource': resource, 'usage': usage}
+
+    @manager.periodic_task
+    def _expire_reservations(self, context):
+        QUOTAS.expire(context)

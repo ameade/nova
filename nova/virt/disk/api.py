@@ -129,9 +129,8 @@ def bind(src, target, instance_name):
         s = os.stat(src)
         cgroup_info = "b %s:%s rwm\n" % (os.major(s.st_rdev),
                                          os.minor(s.st_rdev))
-        cgroups_path = \
-            "/sys/fs/cgroup/devices/libvirt/lxc/%s/devices.allow" \
-            % instance_name
+        cgroups_path = ("/sys/fs/cgroup/devices/libvirt/lxc/"
+                        "%s/devices.allow" % instance_name)
         utils.execute('tee', cgroups_path,
                       process_input=cgroup_info, run_as_root=True)
 
@@ -162,7 +161,8 @@ class _DiskImage(object):
             self.handlers.remove('loop')
 
         if not self.handlers:
-            raise exception.Error(_('no capable image handler configured'))
+            msg = _('no capable image handler configured')
+            raise exception.NovaException(msg)
 
     @property
     def errors(self):
@@ -175,7 +175,8 @@ class _DiskImage(object):
         for cls in (loop.Mount, nbd.Mount, guestfs.Mount):
             if cls.mode == mode:
                 return cls
-        raise exception.Error(_("unknown disk image handler: %s") % mode)
+        msg = _("unknown disk image handler: %s") % mode
+        raise exception.NovaException(msg)
 
     def mount(self):
         """Mount a disk image, using the object attributes.
@@ -186,7 +187,7 @@ class _DiskImage(object):
         contains any diagnostics.
         """
         if self._mounter:
-            raise exception.Error(_('image already mounted'))
+            raise exception.NovaException(_('image already mounted'))
 
         if not self.mount_dir:
             self.mount_dir = tempfile.mkdtemp()
@@ -242,7 +243,7 @@ def inject_data(image,
         finally:
             img.umount()
     else:
-        raise exception.Error(img.errors)
+        raise exception.NovaException(img.errors)
 
 
 def inject_files(image, files, partition=None, use_cow=False):
@@ -255,7 +256,7 @@ def inject_files(image, files, partition=None, use_cow=False):
         finally:
             img.umount()
     else:
-        raise exception.Error(img.errors)
+        raise exception.NovaException(img.errors)
 
 
 def setup_container(image, container_dir=None, use_cow=False):
@@ -271,7 +272,7 @@ def setup_container(image, container_dir=None, use_cow=False):
         if img.mount():
             return img
         else:
-            raise exception.Error(img.errors)
+            raise exception.NovaException(img.errors)
     except Exception, exn:
         LOG.exception(_('Failed to mount filesystem: %s'), exn)
 
@@ -403,7 +404,7 @@ def _set_passwd(username, admin_passwd, passwd_file, shadow_file):
     :param passwd_file: path to the passwd file
     :param shadow_file: path to the shadow password file
     :returns: nothing
-    :raises: exception.Error(), IOError()
+    :raises: exception.NovaException(), IOError()
 
     """
     salt_set = ('abcdefghijklmnopqrstuvwxyz'
@@ -439,7 +440,7 @@ def _set_passwd(username, admin_passwd, passwd_file, shadow_file):
                 break
         if not found:
             msg = _('User %(username)s not found in password file.')
-            raise exception.Error(msg % username)
+            raise exception.NovaException(msg % username)
 
         # update password in the shadow file.It's an error if the
         # the user doesn't exist.
@@ -455,7 +456,7 @@ def _set_passwd(username, admin_passwd, passwd_file, shadow_file):
         s_file.close()
         if not found:
             msg = _('User %(username)s not found in shadow file.')
-            raise exception.Error(msg % username)
+            raise exception.NovaException(msg % username)
         s_file = open(shadow_file, 'wb')
         for entry in new_shadow:
             s_file.write(entry)

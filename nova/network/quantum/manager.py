@@ -98,6 +98,10 @@ class QuantumManager(manager.FloatingIP, manager.FlatManager):
         networks = self.get_all_networks(context.get_admin_context())
         cidrs = []
         for net in networks:
+            # Don't update host information for network that does not
+            # belong to you
+            if net['host'] != self.host:
+                continue
             if net['gateway']:
                 LOG.debug("Initializing NAT: %s (cidr: %s, gw: %s)" % (
                     net['label'], net['cidr'], net['gateway']))
@@ -279,14 +283,25 @@ class QuantumManager(manager.FloatingIP, manager.FlatManager):
 
         # Now we can delete the network
         self.q_conn.delete_network(q_tenant_id, net_uuid)
-        LOG.debug("Deleting network %s for tenant: %s" % \
-                                    (net_uuid, q_tenant_id))
+        LOG.debug("Deleting network %s for tenant: %s" %
+                  (net_uuid, q_tenant_id))
         self.ipam.delete_subnets_by_net_id(context, net_uuid, project_id)
         # Get rid of dnsmasq
         if FLAGS.quantum_use_dhcp:
-            dev = self.driver.get_dev(net_ref)
-            if self.driver._device_exists(dev):
-                self.driver.kill_dhcp(dev)
+            if net_ref['host'] == self.host:
+                self.kill_dhcp(net_ref)
+            else:
+                topic = rpc.queue_get_for(context,
+                        FLAGS.network_topic,
+                        net_ref['host'])
+
+                rpc.call(context, topic, {'method': 'kill_dhcp',
+                        'args': {'net_ref': net_ref}})
+
+    def kill_dhcp(self, net_ref):
+        dev = self.driver.get_dev(net_ref)
+        if self.driver._device_exists(dev):
+            self.driver.kill_dhcp(dev)
 
     def allocate_for_instance(self, context, **kwargs):
         """Called by compute when it is creating a new VM.
@@ -370,8 +385,18 @@ class QuantumManager(manager.FloatingIP, manager.FlatManager):
                                                allowed_address_pairs=pairs)
             # Set up/start the dhcp server for this network if necessary
             if FLAGS.quantum_use_dhcp:
-                self.enable_dhcp(context, network['quantum_net_id'], network,
-                    vif_rec, network['net_tenant_id'])
+                if network['host'] == self.host:
+                    self.enable_dhcp(context, network['quantum_net_id'],
+                            network, vif_rec, network['net_tenant_id'])
+                else:
+                    topic = rpc.queue_get_for(context,
+                                FLAGS.network_topic, network['host'])
+                    rpc.call(context, topic, {'method': 'enable_dhcp',
+                        'args': {'quantum_net_id': network['quantum_net_id'],
+                        'network_ref': network,
+                        'vif_rec': vif_rec,
+                        'project_id': network['net_tenant_id']}})
+
         return self.get_instance_nw_info(context, instance_id,
                                          instance['uuid'],
                                          rxtx_factor, host,
@@ -552,7 +577,7 @@ class QuantumManager(manager.FloatingIP, manager.FlatManager):
         nw_info = self.build_network_info_model(context, vifs, networks,
                                                 rxtx_factor, host)
         db.instance_info_cache_update(context, instance_uuid,
-                                      {'network_info': nw_info.as_cache()})
+                                      {'network_info': nw_info.json()})
 
         return nw_info
 
@@ -579,8 +604,17 @@ class QuantumManager(manager.FloatingIP, manager.FlatManager):
                                 network['uuid'], project_id, vif, instance_id)
 
             if FLAGS.quantum_use_dhcp:
-                self.update_dhcp(context, ipam_tenant_id, network,
+                if network['host'] == self.host:
+                    self.update_dhcp(context, ipam_tenant_id, network,
                                  vif, project_id)
+                else:
+                    topic = rpc.queue_get_for(context,
+                                FLAGS.network_topic, network['host'])
+                    rpc.call(context, topic, {'method': 'update_dhcp',
+                        'args': {'ipam_tenant_id': ipam_tenant_id,
+                        'network_ref': network,
+                        'vif_ref': vif,
+                        'project_id': network['project_id']}})
 
             db.virtual_interface_delete(admin_context, vif['id'])
 
@@ -688,14 +722,6 @@ class QuantumManager(manager.FloatingIP, manager.FlatManager):
                                     net_id)
             if not (is_tenant_net or is_provider_net):
                 raise exception.NetworkNotFound(network_id=net_id)
-
-    # NOTE(bgh): deallocate_for_instance will take care of this..  The reason
-    # we're providing this is so that NetworkManager::release_fixed_ip() isn't
-    # called.  It does some database operations that we don't want to happen
-    # and since the majority of the stuff that it does is already taken care
-    # of in our deallocate_for_instance call we don't need to do anything.
-    def release_fixed_ip(self, context, address):
-        pass
 
     def get_dhcp_hosts_text(self, context, subnet_id, project_id=None):
         ips = self.ipam.get_allocated_ips(context, subnet_id, project_id)

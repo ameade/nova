@@ -22,16 +22,16 @@ Management class for Pool-related functions (join, eject, etc).
 import json
 import urlparse
 
+from nova.compute import aggregate_states
 from nova import db
 from nova import exception
 from nova import flags
 from nova import log as logging
-from nova import rpc
-from nova.compute import aggregate_states
 from nova.openstack.common import cfg
+from nova import rpc
 from nova.virt.xenapi import vm_utils
 
-LOG = logging.getLogger("nova.virt.xenapi.pool")
+LOG = logging.getLogger(__name__)
 
 xenapi_pool_opts = [
     cfg.BoolOpt('use_join_force',
@@ -195,7 +195,7 @@ def forward_request(context, request_type, master, aggregate_id,
     # because this might be 169.254.0.1, i.e. xenapi
     # NOTE: password in clear is not great, but it'll do for now
     sender_url = swap_xapi_host(FLAGS.xenapi_connection_url, slave_address)
-    rpc.cast(context, db.queue_get_for(context, FLAGS.compute_topic, master),
+    rpc.cast(context, rpc.queue_get_for(context, FLAGS.compute_topic, master),
              {"method": request_type,
               "args": {"aggregate_id": aggregate_id,
                        "host": slave_compute,

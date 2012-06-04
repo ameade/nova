@@ -25,8 +25,6 @@ import errno
 import functools
 import hashlib
 import inspect
-import itertools
-import json
 import os
 import pyclbr
 import random
@@ -46,9 +44,9 @@ from xml.sax import saxutils
 
 from eventlet import corolocal
 from eventlet import event
+from eventlet.green import subprocess
 from eventlet import greenthread
 from eventlet import semaphore
-from eventlet.green import subprocess
 import iso8601
 import lockfile
 import netaddr
@@ -69,29 +67,6 @@ FLAGS = flags.FLAGS
 FLAGS.register_opt(
     cfg.BoolOpt('disable_process_locking', default=False,
                 help='Whether to disable inter-process locks'))
-
-
-def find_config(config_path):
-    """Find a configuration file using the given hint.
-
-    :param config_path: Full or relative path to the config.
-    :returns: Full path of the config, if it exists.
-    :raises: `nova.exception.ConfigNotFound`
-
-    """
-    possible_locations = [
-        config_path,
-        os.path.join(FLAGS.state_path, "etc", "nova", config_path),
-        os.path.join(FLAGS.state_path, "etc", config_path),
-        os.path.join(FLAGS.state_path, config_path),
-        "/etc/nova/%s" % config_path,
-    ]
-
-    for path in possible_locations:
-        if os.path.exists(path):
-            return os.path.abspath(path)
-
-    raise exception.ConfigNotFound(path=os.path.abspath(config_path))
 
 
 def vpn_ping(address, port, timeout=0.05, session_id=None):
@@ -167,7 +142,7 @@ def execute(*cmd, **kwargs):
                                the command is prefixed by the command specified
                                in the root_helper FLAG.
 
-    :raises exception.Error: on receiving unknown arguments
+    :raises exception.NovaException: on receiving unknown arguments
     :raises exception.ProcessExecutionError:
 
     :returns: a tuple, (stdout, stderr) from the spawned process, or None if
@@ -188,8 +163,8 @@ def execute(*cmd, **kwargs):
     shell = kwargs.pop('shell', False)
 
     if len(kwargs):
-        raise exception.Error(_('Got unknown keyword args '
-                                'to utils.execute: %r') % kwargs)
+        raise exception.NovaException(_('Got unknown keyword args '
+                                        'to utils.execute: %r') % kwargs)
 
     if run_as_root:
         cmd = shlex.split(FLAGS.root_helper) + list(cmd)
@@ -271,11 +246,12 @@ def ssh_execute(ssh, cmd, process_input=None,
                 addl_env=None, check_exit_code=True):
     LOG.debug(_('Running cmd (SSH): %s'), ' '.join(cmd))
     if addl_env:
-        raise exception.Error(_('Environment not supported over SSH'))
+        raise exception.NovaException(_('Environment not supported over SSH'))
 
     if process_input:
         # This is (probably) fixable if we need it...
-        raise exception.Error(_('process_input not supported over SSH'))
+        msg = _('process_input not supported over SSH')
+        raise exception.NovaException(msg)
 
     stdin_stream, stdout_stream, stderr_stream = ssh.exec_command(cmd)
     channel = stdout_stream.channel
@@ -308,27 +284,6 @@ def novadir():
     return os.path.abspath(nova.__file__).split('nova/__init__.py')[0]
 
 
-def default_flagfile(filename='nova.conf', args=None):
-    if args is None:
-        args = sys.argv
-    for arg in args:
-        if arg.find('flagfile') != -1:
-            return arg[arg.index('flagfile') + len('flagfile') + 1:]
-    else:
-        if not os.path.isabs(filename):
-            # turn relative filename into an absolute path
-            script_dir = os.path.dirname(inspect.stack()[-1][1])
-            filename = os.path.abspath(os.path.join(script_dir, filename))
-        if not os.path.exists(filename):
-            filename = "./nova.conf"
-            if not os.path.exists(filename):
-                filename = '/etc/nova/nova.conf'
-        if os.path.exists(filename):
-            flagfile = '--flagfile=%s' % filename
-            args.insert(1, flagfile)
-            return filename
-
-
 def debug(arg):
     LOG.debug(_('debug in callback: %s'), arg)
     return arg
@@ -336,7 +291,7 @@ def debug(arg):
 
 def generate_uid(topic, size=8):
     characters = '01234567890abcdefghijklmnopqrstuvwxyz'
-    choices = [random.choice(characters) for x in xrange(size)]
+    choices = [random.choice(characters) for _x in xrange(size)]
     return '%s-%s' % (topic, ''.join(choices))
 
 
@@ -484,11 +439,12 @@ def get_my_linklocal(interface):
         if address[0] is not None:
             return address[0]
         else:
-            raise exception.Error(_('Link Local address is not found.:%s')
-                                  % if_str)
+            msg = _('Link Local address is not found.:%s') % if_str
+            raise exception.NovaException(msg)
     except Exception as ex:
-        raise exception.Error(_("Couldn't get Link Local IP of %(interface)s"
-                                " :%(ex)s") % locals())
+        msg = _("Couldn't get Link Local IP of %(interface)s"
+                " :%(ex)s") % locals()
+        raise exception.NovaException(msg)
 
 
 def utcnow():
@@ -511,7 +467,7 @@ def utcnow_ts():
     return time.mktime(utcnow().timetuple())
 
 
-def set_time_override(override_time=datetime.datetime.utcnow()):
+def set_time_override(override_time=utcnow()):
     """Override utils.utcnow to return a constant time."""
     utcnow.override_time = override_time
 
@@ -547,7 +503,7 @@ def parse_strtime(timestr, fmt=PERFECT_TIME_FORMAT):
 def isotime(at=None):
     """Stringify time in ISO 8601 format"""
     if not at:
-        at = datetime.datetime.utcnow()
+        at = utcnow()
     str = at.strftime(ISO_TIME_FORMAT)
     tz = at.tzinfo.tzname(None) if at.tzinfo else 'UTC'
     str += ('Z' if tz == 'UTC' else tz)
@@ -598,7 +554,8 @@ class LazyPluggable(object):
         if not self.__backend:
             backend_name = FLAGS[self.__pivot]
             if backend_name not in self.__backends:
-                raise exception.Error(_('Invalid backend: %s') % backend_name)
+                msg = _('Invalid backend: %s') % backend_name
+                raise exception.NovaException(msg)
 
             backend = self.__backends[backend_name]
             if isinstance(backend, tuple):
@@ -695,104 +652,6 @@ def utf8(value):
         return value.encode('utf-8')
     assert isinstance(value, str)
     return value
-
-
-def to_primitive(value, convert_instances=False, level=0):
-    """Convert a complex object into primitives.
-
-    Handy for JSON serialization. We can optionally handle instances,
-    but since this is a recursive function, we could have cyclical
-    data structures.
-
-    To handle cyclical data structures we could track the actual objects
-    visited in a set, but not all objects are hashable. Instead we just
-    track the depth of the object inspections and don't go too deep.
-
-    Therefore, convert_instances=True is lossy ... be aware.
-
-    """
-    nasty = [inspect.ismodule, inspect.isclass, inspect.ismethod,
-             inspect.isfunction, inspect.isgeneratorfunction,
-             inspect.isgenerator, inspect.istraceback, inspect.isframe,
-             inspect.iscode, inspect.isbuiltin, inspect.isroutine,
-             inspect.isabstract]
-    for test in nasty:
-        if test(value):
-            return unicode(value)
-
-    # value of itertools.count doesn't get caught by inspects
-    # above and results in infinite loop when list(value) is called.
-    if type(value) == itertools.count:
-        return unicode(value)
-
-    # FIXME(vish): Workaround for LP bug 852095. Without this workaround,
-    #              tests that raise an exception in a mocked method that
-    #              has a @wrap_exception with a notifier will fail. If
-    #              we up the dependency to 0.5.4 (when it is released) we
-    #              can remove this workaround.
-    if getattr(value, '__module__', None) == 'mox':
-        return 'mock'
-
-    if level > 3:
-        return '?'
-
-    # The try block may not be necessary after the class check above,
-    # but just in case ...
-    try:
-        if isinstance(value, (list, tuple)):
-            o = []
-            for v in value:
-                o.append(to_primitive(v, convert_instances=convert_instances,
-                                      level=level))
-            return o
-        elif isinstance(value, dict):
-            o = {}
-            for k, v in value.iteritems():
-                o[k] = to_primitive(v, convert_instances=convert_instances,
-                                    level=level)
-            return o
-        elif isinstance(value, datetime.datetime):
-            return str(value)
-        elif hasattr(value, 'iteritems'):
-            return to_primitive(dict(value.iteritems()),
-                                convert_instances=convert_instances,
-                                level=level)
-        elif hasattr(value, '__iter__'):
-            return to_primitive(list(value), level)
-        elif convert_instances and hasattr(value, '__dict__'):
-            # Likely an instance of something. Watch for cycles.
-            # Ignore class member vars.
-            return to_primitive(value.__dict__,
-                                convert_instances=convert_instances,
-                                level=level + 1)
-        else:
-            return value
-    except TypeError, e:
-        # Class objects are tricky since they may define something like
-        # __iter__ defined but it isn't callable as list().
-        return unicode(value)
-
-
-def dumps(value):
-    try:
-        return json.dumps(value)
-    except TypeError:
-        pass
-    return json.dumps(to_primitive(value))
-
-
-def loads(s):
-    return json.loads(s)
-
-
-try:
-    import anyjson
-except ImportError:
-    pass
-else:
-    anyjson._modules.append(("nova.utils", "dumps", TypeError,
-                                           "loads", ValueError))
-    anyjson.force_implementation("nova.utils")
 
 
 class GreenLockFile(lockfile.FileLock):
@@ -1005,12 +864,12 @@ def get_from_path(items, path):
 
     """
     if path is None:
-        raise exception.Error('Invalid mini_xpath')
+        raise exception.NovaException('Invalid mini_xpath')
 
     (first_token, sep, remainder) = path.partition('/')
 
     if first_token == '':
-        raise exception.Error('Invalid mini_xpath')
+        raise exception.NovaException('Invalid mini_xpath')
 
     results = []
 
@@ -1087,8 +946,6 @@ def check_isinstance(obj, cls):
     if isinstance(obj, cls):
         return obj
     raise Exception(_('Expected object of type: %s') % (str(cls)))
-    # TODO(justinsb): Can we make this better??
-    return cls()  # Ugly PyLint hack
 
 
 def parse_server_string(server_str):
@@ -1117,7 +974,7 @@ def parse_server_string(server_str):
         return (address, port)
 
     except Exception:
-        LOG.debug(_('Invalid server_string: %s'), server_str)
+        LOG.error(_('Invalid server_string: %s'), server_str)
         return ('', '')
 
 
@@ -1258,6 +1115,11 @@ def generate_glance_url():
     return "http://%s:%d" % (FLAGS.glance_host, FLAGS.glance_port)
 
 
+def generate_image_url(image_ref):
+    """Generate an image URL from an image_ref."""
+    return "%s/images/%s" % (generate_glance_url(), image_ref)
+
+
 @contextlib.contextmanager
 def logging_error(message):
     """Catches exception, write message to the log, re-raise.
@@ -1332,6 +1194,7 @@ def read_cached_file(filename, cache_info, reload_func=None):
     """
     mtime = os.path.getmtime(filename)
     if not cache_info or mtime != cache_info.get('mtime'):
+        LOG.debug(_("Reloading cached file %s") % filename)
         with open(filename) as fap:
             cache_info['data'] = fap.read()
         cache_info['mtime'] = mtime
@@ -1603,7 +1466,7 @@ def tempdir(**kwargs):
         try:
             shutil.rmtree(tmpdir)
         except OSError, e:
-            LOG.debug(_('Could not remove tmpdir: %s'), str(e))
+            LOG.error(_('Could not remove tmpdir: %s'), str(e))
 
 
 def strcmp_const_time(s1, s2):

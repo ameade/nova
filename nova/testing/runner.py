@@ -59,9 +59,9 @@ To run a single test:
 import gettext
 import heapq
 import os
-import unittest
 import sys
 import time
+import unittest
 
 import eventlet
 from nose import config
@@ -110,8 +110,6 @@ class _AnsiColorizer(object):
                     curses.setupterm()
                     return curses.tigetnum("colors") > 2
             except Exception:
-                raise
-                # guess false in case of error
                 return False
     supported = classmethod(supported)
 

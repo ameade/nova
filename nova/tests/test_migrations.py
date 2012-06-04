@@ -24,21 +24,21 @@ properly both upgrading and downgrading, and that no data loss occurs
 if possible.
 """
 
-import ConfigParser
 import commands
+import ConfigParser
 import os
 import urlparse
 
 from migrate.versioning import repository
 import sqlalchemy
 
-import nova.db.sqlalchemy.migrate_repo
 import nova.db.migration as migration
+import nova.db.sqlalchemy.migrate_repo
 from nova.db.sqlalchemy.migration import versioning_api as migration_api
 from nova import log as logging
 from nova import test
 
-LOG = logging.getLogger('nova.tests.test_migrations')
+LOG = logging.getLogger(__name__)
 
 
 def _mysql_get_connect_string(user="openstack_citest",
@@ -68,10 +68,11 @@ def _is_mysql_avail(user="openstack_citest",
         return True
 
 
-def _missing_mysql():
-    if "NOVA_TEST_MYSQL_PRESENT" in os.environ:
-        return True
-    return not _is_mysql_avail()
+def _have_mysql():
+    present = os.environ.get('NOVA_TEST_MYSQL_PRESENT')
+    if present is None:
+        return _is_mysql_avail()
+    return present.lower() in ('', 'true')
 
 
 class TestMigrations(test.TestCase):
@@ -215,7 +216,7 @@ class TestMigrations(test.TestCase):
         if _is_mysql_avail(user="openstack_cifail"):
             self.fail("Shouldn't have connected")
 
-    @test.skip_if(_missing_mysql(), "mysql not available")
+    @test.skip_unless(_have_mysql(), "mysql not available")
     def test_mysql_innodb(self):
         """
         Test that table creation on mysql only builds InnoDB tables
@@ -243,7 +244,8 @@ class TestMigrations(test.TestCase):
         noninnodb = connection.execute("SELECT count(*) "
                                        "from information_schema.TABLES "
                                        "where TABLE_SCHEMA='openstack_citest' "
-                                       "and ENGINE!='InnoDB'")
+                                       "and ENGINE!='InnoDB' "
+                                       "and TABLE_NAME!='migrate_version'")
         count = noninnodb.scalar()
         self.assertEqual(count, 0, "%d non InnoDB tables created" % count)
 

@@ -224,7 +224,7 @@ class TestSecurityGroups(test.TestCase):
 
     def test_create_security_group_quota_limit(self):
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-groups')
-        for num in range(1, FLAGS.quota_security_groups):
+        for num in range(1, FLAGS.quota_security_groups + 1):
             name = 'test%s' % num
             sg = security_group_template(name=name)
             res_dict = self.controller.create(req, {'security_group': sg})
@@ -815,7 +815,7 @@ class TestSecurityGroupRules(test.TestCase):
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                           req, {'security_group_rule': rule})
 
-    def  _test_create_with_no_ports(self, proto):
+    def _test_create_with_no_ports(self, proto):
         rule = {'ip_protocol': proto, 'parent_group_id': '2', 'group_id': '1'}
 
         req = fakes.HTTPRequest.blank('/v2/fake/os-security-group-rules')
@@ -844,7 +844,7 @@ class TestSecurityGroupRules(test.TestCase):
         self._test_create_with_no_ports_and_no_group('udp')
         self._test_create_with_no_ports('udp')
 
-    def  _test_create_with_ports(self, id_val, proto, from_port, to_port):
+    def _test_create_with_ports(self, id_val, proto, from_port, to_port):
         rule = {
             'ip_protocol': proto, 'from_port': from_port, 'to_port': to_port,
             'parent_group_id': '2', 'group_id': '1'

@@ -22,10 +22,8 @@ from eventlet import tpool
 
 from nova.virt.xenapi import connection as xenapi_conn
 from nova.virt.xenapi import fake
-from nova.virt.xenapi import volume_utils
 from nova.virt.xenapi import vm_utils
 from nova.virt.xenapi import vmops
-from nova import utils
 
 
 def stubout_firewall_driver(stubs, conn):
@@ -71,14 +69,6 @@ def stubout_session(stubs, cls, product_version=(5, 6, 2), **opt_args):
     # sessions to be called synchronously in the unit tests. (see
     # bug 946687)
     stubs.Set(tpool, 'execute', lambda m, *a, **kw: m(*a, **kw))
-
-
-def stub_out_get_target(stubs):
-    """Stubs out _get_target in volume_utils"""
-    def fake_get_target(volume_id):
-        return (None, None)
-
-    stubs.Set(volume_utils, '_get_target', fake_get_target)
 
 
 def stubout_get_this_vm_uuid(stubs):
@@ -162,12 +152,6 @@ def stubout_create_vm(stubs):
     stubs.Set(vm_utils.VMHelper, 'create_vm', f)
 
 
-def stubout_loopingcall_start(stubs):
-    def fake_start(self, interval):
-        self.f(*self.args, **self.kw)
-    stubs.Set(utils.LoopingCall, 'start', fake_start)
-
-
 def _make_fake_vdi():
     sr_ref = fake.get_all('SR')[0]
     vdi_ref = fake.create_vdi('', sr_ref)
@@ -244,12 +228,6 @@ class FakeSessionForVMTests(fake.SessionBase):
         fake.destroy_vm(vm_ref)
 
     def SR_scan(self, session_ref, sr_ref):
-        pass
-
-    def VDI_set_name_label(self, session_ref, vdi_ref, name_label):
-        pass
-
-    def VDI_set_name_description(self, session_ref, vdi_ref, name_description):
         pass
 
 
@@ -355,24 +333,13 @@ class FakeSessionForVolumeFailedTests(FakeSessionForVolumeTests):
         pass
 
 
-class FakeSessionForMigrationTests(FakeSessionForVMTests):
-    """Stubs out a XenAPISession for Migration tests"""
-    def __init__(self, uri):
-        super(FakeSessionForMigrationTests, self).__init__(uri)
-
-    def VDI_get_by_uuid(self, *args):
-        return 'hurr'
-
-    def VM_set_name_label(self, *args):
-        pass
-
-    def VDI_set_name_label(self, session_ref, vdi_ref, name_label):
-        pass
-
-
 def stub_out_migration_methods(stubs):
     def fake_create_snapshot(self, instance):
         return 'vm_ref', dict(image='foo', snap='bar')
+
+    def fake_move_disks(self, instance, disk_info):
+        vdi_ref = fake.create_vdi('new', 'fake')
+        return fake.get_record('VDI', vdi_ref)['uuid']
 
     @classmethod
     def fake_get_vdi(cls, session, vm_ref):
@@ -396,6 +363,7 @@ def stub_out_migration_methods(stubs):
         pass
 
     stubs.Set(vmops.VMOps, '_destroy', fake_destroy)
+    stubs.Set(vmops.VMOps, '_move_disks', fake_move_disks)
     stubs.Set(vm_utils.VMHelper, 'scan_default_sr', fake_sr)
     stubs.Set(vm_utils.VMHelper, 'scan_sr', fake_sr)
     stubs.Set(vmops.VMOps, '_create_snapshot', fake_create_snapshot)
