@@ -17,6 +17,7 @@
 """Compute-related Utilities and helpers."""
 
 from nova import db
+from nova import exception
 from nova import flags
 from nova import log
 from nova.network import model as network_model
@@ -56,7 +57,7 @@ def notify_usage_exists(context, instance_ref, current_period=False,
         try:
             system_metadata = db.instance_system_metadata_get(
                     context, instance_ref.uuid)
-        except exception.NotFound:
+        except exception.InstanceNotFound:
             system_metadata = {}
 
     # add image metadata to the notification:
