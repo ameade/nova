@@ -26,7 +26,6 @@ Includes injection of SSH PGP keys into authorized_keys file.
 """
 
 import crypt
-import json
 import os
 import random
 import re
@@ -36,6 +35,7 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
+from nova.openstack.common import jsonutils
 from nova import utils
 from nova.virt.disk import guestfs
 from nova.virt.disk import loop
@@ -108,6 +108,11 @@ def get_image_virtual_size(image):
     return int(m.group(2))
 
 
+def resize2fs(image, check_exit_code=False):
+    utils.execute('e2fsck', '-fp', image, check_exit_code=check_exit_code)
+    utils.execute('resize2fs', image, check_exit_code=check_exit_code)
+
+
 def extend(image, size):
     """Increase image to size"""
     # NOTE(MotoKen): check image virtual size before resize
@@ -116,8 +121,7 @@ def extend(image, size):
         return
     utils.execute('qemu-img', 'resize', image, size)
     # NOTE(vish): attempts to resize filesystem
-    utils.execute('e2fsck', '-fp', image, check_exit_code=False)
-    utils.execute('resize2fs', image, check_exit_code=False)
+    resize2fs(image)
 
 
 def bind(src, target, instance_name):
@@ -320,7 +324,7 @@ def _inject_metadata_into_fs(metadata, fs, execute=None):
     metadata = dict([(m.key, m.value) for m in metadata])
 
     utils.execute('tee', metadata_path,
-                  process_input=json.dumps(metadata), run_as_root=True)
+                  process_input=jsonutils.dumps(metadata), run_as_root=True)
 
 
 def _inject_key_into_fs(key, fs, execute=None):

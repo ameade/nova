@@ -57,7 +57,6 @@
 import ast
 import errno
 import gettext
-import json
 import math
 import netaddr
 import optparse
@@ -90,6 +89,8 @@ from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
+from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 from nova import quota
 from nova import rpc
 from nova.scheduler import rpcapi as scheduler_rpcapi
@@ -968,7 +969,7 @@ class ServiceCommands(object):
         Show a list of all running services. Filter by host & service name.
         """
         ctxt = context.get_admin_context()
-        now = utils.utcnow()
+        now = timeutils.utcnow()
         services = db.service_get_all(ctxt)
         if host:
             services = [s for s in services if s['host'] == host]
@@ -1083,7 +1084,7 @@ class HostCommands(object):
         print "%-25s\t%-15s" % (_('host'),
                                 _('zone'))
         ctxt = context.get_admin_context()
-        now = utils.utcnow()
+        now = timeutils.utcnow()
         services = db.service_get_all(ctxt)
         if zone:
             services = [s for s in services if s['availability_zone'] == zone]
@@ -1331,26 +1332,11 @@ class StorageManagerCommands(object):
         # TODO(renukaapte) Add backend_introduce.
         ctxt = context.get_admin_context()
         params = dict(map(self._splitfun, args))
-        sr_uuid = utils.gen_uuid()
-
-        if flavor_label is None:
-            print "error: backend needs to be associated with flavor"
-            sys.exit(2)
-
-        try:
-            flavors = db.sm_flavor_get(ctxt, flavor_label)
-
-        except exception.NotFound as ex:
-            print "error: %s" % ex
-            sys.exit(2)
-
-        config_params = " ".join(['%s=%s' %
-                               (key, params[key]) for key in params])
 
         if 'sr_uuid' in params:
-            sr_uuid = params['sr_uuid']
             try:
-                backend = db.sm_backend_conf_get_by_sr(ctxt, sr_uuid)
+                backend = db.sm_backend_conf_get_by_sr(ctxt,
+                                                       params['sr_uuid'])
             except exception.DBError, e:
                 _db_error(e)
 
@@ -1361,24 +1347,38 @@ class StorageManagerCommands(object):
                 if c == 'y' or c == 'Y':
                     try:
                         db.sm_backend_conf_update(ctxt, backend['id'],
-                                        dict(created=False,
-                                             flavor_id=flavors['id'],
-                                             sr_type=sr_type,
-                                             config_params=config_params))
+                                                  dict(created=False))
                     except exception.DBError, e:
                         _db_error(e)
                 return
 
             else:
                 print 'Backend config not found. Would you like to create it?'
+                print '(WARNING: Creating will destroy all data on backend!!!)'
+                c = raw_input('Proceed? (y/n) ')
+                if c != 'y' and c != 'Y':
+                    return
 
         print '(WARNING: Creating will destroy all data on backend!!!)'
         c = raw_input('Proceed? (y/n) ')
         if c == 'y' or c == 'Y':
+            if flavor_label is None:
+                print "error: backend needs to be associated with flavor"
+                sys.exit(2)
+
+            try:
+                flavors = db.sm_flavor_get(ctxt, flavor_label)
+            except exception.NotFound as ex:
+                print "error: %s" % ex
+                sys.exit(2)
+
+            config_params = "".join(['%s=%s ' %
+                                   (key, params[key]) for key in params])
+
             try:
                 db.sm_backend_conf_create(ctxt,
                                           dict(flavor_id=flavors['id'],
-                                               sr_uuid=sr_uuid,
+                                               sr_uuid=None,
                                                sr_type=sr_type,
                                                config_params=config_params))
             except exception.DBError, e:
@@ -1536,7 +1536,7 @@ class ExportCommands(object):
 
     def auth(self):
         """Export Nova auth data in format that can be consumed by Keystone"""
-        print json.dumps(self._get_auth_data())
+        print jsonutils.dumps(self._get_auth_data())
 
     def _get_auth_data(self):
         output = {
@@ -1664,7 +1664,6 @@ def methods_of(obj):
 
 def main():
     """Parse options and call the appropriate class/method."""
-    rpc.register_opts(FLAGS)
 
     try:
         argv = flags.parse_args(sys.argv)

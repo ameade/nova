@@ -19,7 +19,6 @@
 Management class for host-related functions (start, reboot, etc).
 """
 
-import json
 import logging
 
 from nova.compute import vm_states
@@ -27,6 +26,7 @@ from nova import context
 from nova import db
 from nova import exception
 from nova import notifications
+from nova.openstack.common import jsonutils
 from nova.virt.xenapi import vm_utils
 
 LOG = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class Host(object):
 
     def host_power_action(self, _host, action):
         """Reboots or shuts down the host."""
-        args = {"action": json.dumps(action)}
+        args = {"action": jsonutils.dumps(action)}
         methods = {"reboot": "host_reboot", "shutdown": "host_shutdown"}
         response = call_xenhost(self._session, methods[action], args)
         return response.get("power_action", response)
@@ -57,7 +57,7 @@ class Host(object):
                      if host_ref != self._session.get_xenapi_host()]
         migrations_counter = vm_counter = 0
         ctxt = context.get_admin_context()
-        for vm_ref, vm_rec in vm_utils.VMHelper.list_vms(self._session):
+        for vm_ref, vm_rec in vm_utils.list_vms(self._session):
             for host_ref in host_list:
                 try:
                     # Ensure only guest instances are migrated
@@ -112,7 +112,7 @@ class Host(object):
 
     def set_host_enabled(self, _host, enabled):
         """Sets the specified host's ability to accept new instances."""
-        args = {"enabled": json.dumps(enabled)}
+        args = {"enabled": jsonutils.dumps(enabled)}
         response = call_xenhost(self._session, "set_host_enabled", args)
         return response.get("status", response)
 
@@ -144,7 +144,7 @@ class HostState(object):
         if data:
             try:
                 # Get the SR usage
-                sr_ref = vm_utils.VMHelper.safe_find_sr(self._session)
+                sr_ref = vm_utils.safe_find_sr(self._session)
             except exception.NotFound as e:
                 # No SR configured
                 LOG.error(_("Unable to get SR for this host: %s") % e)
@@ -177,7 +177,7 @@ def call_xenhost(session, method, arg_dict):
         result = session.call_plugin('xenhost', method, args=arg_dict)
         if not result:
             return ''
-        return json.loads(result)
+        return jsonutils.loads(result)
     except ValueError:
         LOG.exception(_("Unable to get updated status"))
         return None

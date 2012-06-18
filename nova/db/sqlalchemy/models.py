@@ -21,18 +21,17 @@
 SQLAlchemy models for nova data.
 """
 
-from sqlalchemy.orm import relationship, backref, object_mapper
 from sqlalchemy import Column, Integer, BigInteger, String, schema
-from sqlalchemy import ForeignKey, DateTime, Boolean, Text, Float
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import ForeignKey, DateTime, Boolean, Text, Float
+from sqlalchemy.orm import relationship, backref, object_mapper
 from sqlalchemy.schema import ForeignKeyConstraint
 
 from nova.db.sqlalchemy.session import get_session
-
 from nova import exception
 from nova import flags
-from nova import utils
+from nova.openstack.common import timeutils
 
 
 FLAGS = flags.FLAGS
@@ -43,8 +42,8 @@ class NovaBase(object):
     """Base class for Nova Models."""
     __table_args__ = {'mysql_engine': 'InnoDB'}
     __table_initialized__ = False
-    created_at = Column(DateTime, default=utils.utcnow)
-    updated_at = Column(DateTime, onupdate=utils.utcnow)
+    created_at = Column(DateTime, default=timeutils.utcnow)
+    updated_at = Column(DateTime, onupdate=timeutils.utcnow)
     deleted_at = Column(DateTime)
     deleted = Column(Boolean, default=False)
     metadata = None
@@ -65,7 +64,7 @@ class NovaBase(object):
     def delete(self, session=None):
         """Delete this object."""
         self.deleted = True
-        self.deleted_at = utils.utcnow()
+        self.deleted_at = timeutils.utcnow()
         self.save(session=session)
 
     def __setitem__(self, key, value):
@@ -278,9 +277,6 @@ class Instance(BASE, NovaBase):
     # EC2 disable_api_termination
     disable_terminate = Column(Boolean(), default=False, nullable=False)
 
-    # OpenStack compute cell name
-    cell_name = Column(String(255))
-
 
 class InstanceInfoCache(BASE, NovaBase):
     """
@@ -313,6 +309,7 @@ class InstanceTypes(BASE, NovaBase):
     swap = Column(Integer, nullable=False, default=0)
     rxtx_factor = Column(Float, nullable=False, default=1)
     vcpu_weight = Column(Integer, nullable=True)
+    disabled = Column(Boolean, default=False)
 
     instances = relationship(Instance,
                            backref=backref('instance_type', uselist=False),
@@ -563,7 +560,7 @@ class SecurityGroupInstanceAssociation(BASE, NovaBase):
     __tablename__ = 'security_group_instance_association'
     id = Column(Integer, primary_key=True)
     security_group_id = Column(Integer, ForeignKey('security_groups.id'))
-    instance_id = Column(Integer, ForeignKey('instances.id'))
+    instance_uuid = Column(String(36), ForeignKey('instances.uuid'))
 
 
 class SecurityGroup(BASE, NovaBase):
@@ -584,7 +581,7 @@ class SecurityGroup(BASE, NovaBase):
         'SecurityGroupInstanceAssociation.deleted == False,'
         'SecurityGroup.deleted == False)',
                              secondaryjoin='and_('
-        'SecurityGroupInstanceAssociation.instance_id == Instance.id,'
+        'SecurityGroupInstanceAssociation.instance_uuid == Instance.uuid,'
         # (anthony) the condition below shouldn't be necessary now that the
         # association is being marked as deleted.  However, removing this
         # may cause existing deployments to choke, so I'm leaving it
@@ -845,7 +842,7 @@ class Console(BASE, NovaBase):
     __tablename__ = 'consoles'
     id = Column(Integer, primary_key=True)
     instance_name = Column(String(255))
-    instance_id = Column(Integer)
+    instance_uuid = Column(String(36))
     password = Column(String(255))
     port = Column(Integer, nullable=True)
     pool_id = Column(Integer, ForeignKey('console_pools.id'))
@@ -858,11 +855,13 @@ class InstanceMetadata(BASE, NovaBase):
     id = Column(Integer, primary_key=True)
     key = Column(String(255))
     value = Column(String(255))
-    instance_id = Column(Integer, ForeignKey('instances.id'), nullable=False)
+    instance_uuid = Column(String(36), ForeignKey('instances.uuid'),
+                           nullable=False)
     instance = relationship(Instance, backref="metadata",
-                            foreign_keys=instance_id,
+                            foreign_keys=instance_uuid,
                             primaryjoin='and_('
-                                'InstanceMetadata.instance_id == Instance.id,'
+                                'InstanceMetadata.instance_uuid == '
+                                     'Instance.uuid,'
                                 'InstanceMetadata.deleted == False)')
 
 
@@ -896,22 +895,6 @@ class InstanceTypeExtraSpecs(BASE, NovaBase):
                  primaryjoin='and_('
                  'InstanceTypeExtraSpecs.instance_type_id == InstanceTypes.id,'
                  'InstanceTypeExtraSpecs.deleted == False)')
-
-
-class Cell(BASE, NovaBase):
-    """Represents parent and child cells of this cell."""
-    __tablename__ = 'cells'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255))
-    api_url = Column(String(255))
-    username = Column(String(255))
-    password = Column(String(255))
-    weight_offset = Column(Float(), default=0.0)
-    weight_scale = Column(Float(), default=1.0)
-    is_parent = Column(Boolean())
-    rpc_host = Column(String(255))
-    rpc_port = Column(Integer())
-    rpc_virtual_host = Column(String(255))
 
 
 class AggregateHost(BASE, NovaBase):

@@ -90,7 +90,11 @@ FLAGS.register_opts(linux_net_opts)
 #             add up to 12 characters to binary_name which is used as a prefix,
 #             so we limit it to 16 characters.
 #             (max_chain_name_length - len('-POSTROUTING') == 16)
-binary_name = os.path.basename(inspect.stack()[-1][1])[:16]
+def get_binary_name():
+    """Grab the name of the binary we're running in."""
+    return os.path.basename(inspect.stack()[-1][1])[:16]
+
+binary_name = get_binary_name()
 
 
 class IptablesRule(object):
@@ -656,7 +660,14 @@ def update_dhcp_hostfile_with_text(dev, hosts_text):
 def kill_dhcp(dev):
     pid = _dnsmasq_pid_for(dev)
     if pid:
-        _execute('kill', '-9', pid, run_as_root=True)
+        # Check that the process exists and looks like a dnsmasq process
+        conffile = _dhcp_file(dev, 'conf')
+        out, _err = _execute('cat', '/proc/%d/cmdline' % pid,
+                             check_exit_code=False)
+        if conffile.split('/')[-1] in out:
+            _execute('kill', '-9', pid, run_as_root=True)
+        else:
+            LOG.debug(_('Pid %d is stale, skip killing dnsmasq'), pid)
 
 
 # NOTE(ja): Sending a HUP only reloads the hostfile, so any
@@ -693,6 +704,7 @@ def restart_dhcp(context, dev, network_ref):
         if conffile.split('/')[-1] in out:
             try:
                 _execute('kill', '-HUP', pid, run_as_root=True)
+                _add_dnsmasq_accept_rules(dev)
                 return
             except Exception as exc:  # pylint: disable=W0703
                 LOG.error(_('Hupping dnsmasq threw %s'), exc)

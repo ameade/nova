@@ -67,6 +67,7 @@ from nova.openstack.common import cfg
 from nova.openstack.common import excutils
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 import nova.policy
 from nova import quota
 from nova import rpc
@@ -764,8 +765,9 @@ class NetworkManager(manager.SchedulerDependentManager):
         temp = importutils.import_object(FLAGS.floating_ip_dns_manager)
         self.floating_dns_manager = temp
         self.network_api = network_api.API()
-        self.compute_api = compute_api.API()
-        self.sgh = importutils.import_object(FLAGS.security_group_handler)
+        self.security_group_api = compute_api.SecurityGroupAPI()
+        self.compute_api = compute_api.API(
+                                   security_group_api=self.security_group_api)
 
         # NOTE(tr3buchet: unless manager subclassing NetworkManager has
         #                 already imported ipam, import nova ipam here
@@ -818,7 +820,7 @@ class NetworkManager(manager.SchedulerDependentManager):
     @manager.periodic_task
     def _disassociate_stale_fixed_ips(self, context):
         if self.timeout_fixed_ips:
-            now = utils.utcnow()
+            now = timeutils.utcnow()
             timeout = FLAGS.fixed_ip_disassociate_timeout
             time = now - datetime.timedelta(seconds=timeout)
             num = self.db.fixed_ip_disassociate_all_by_timeout(context,
@@ -843,10 +845,10 @@ class NetworkManager(manager.SchedulerDependentManager):
         instance_ref = self.db.instance_get(admin_context, instance_id)
         groups = instance_ref['security_groups']
         group_ids = [group['id'] for group in groups]
-        self.compute_api.trigger_security_group_members_refresh(admin_context,
-                                                                group_ids)
-        self.sgh.trigger_security_group_members_refresh(admin_context,
+        self.security_group_api.trigger_members_refresh(admin_context,
                                                         group_ids)
+        self.security_group_api.trigger_handler('security_group_members',
+                                                admin_context, group_ids)
 
     def get_floating_ips_by_fixed_address(self, context, fixed_address):
         # NOTE(jkoelker) This is just a stub function. Managers supporting
@@ -1302,7 +1304,7 @@ class NetworkManager(manager.SchedulerDependentManager):
         if fixed_ip['instance_id'] is None:
             msg = _('IP %s leased that is not associated') % address
             raise exception.NovaException(msg)
-        now = utils.utcnow()
+        now = timeutils.utcnow()
         self.db.fixed_ip_update(context,
                                 fixed_ip['address'],
                                 {'leased': True,

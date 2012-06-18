@@ -23,6 +23,7 @@ import copy
 
 from nova import log as logging
 from nova.openstack.common import local
+from nova.openstack.common import timeutils
 from nova import utils
 
 
@@ -43,7 +44,8 @@ class RequestContext(object):
     def __init__(self, user_id, project_id, is_admin=None, read_deleted="no",
                  roles=None, remote_address=None, timestamp=None,
                  request_id=None, auth_token=None, overwrite=True,
-                 quota_class=None, **kwargs):
+                 quota_class=None, user_name=None, project_name=None,
+                 **kwargs):
         """
         :param read_deleted: 'no' indicates deleted records are hidden, 'yes'
             indicates deleted records are visible, 'only' indicates that
@@ -70,9 +72,9 @@ class RequestContext(object):
         self.read_deleted = read_deleted
         self.remote_address = remote_address
         if not timestamp:
-            timestamp = utils.utcnow()
+            timestamp = timeutils.utcnow()
         if isinstance(timestamp, basestring):
-            timestamp = utils.parse_strtime(timestamp)
+            timestamp = timeutils.parse_strtime(timestamp)
         self.timestamp = timestamp
         if not request_id:
             request_id = generate_request_id()
@@ -83,6 +85,8 @@ class RequestContext(object):
         # rs_limits turnstile pre-processor.
         # See https://lists.launchpad.net/openstack/msg12200.html
         self.quota_class = quota_class
+        self.user_name = user_name
+        self.project_name = project_name
 
         if overwrite or not hasattr(local.store, 'context'):
             self.update_store()
@@ -112,10 +116,12 @@ class RequestContext(object):
                 'read_deleted': self.read_deleted,
                 'roles': self.roles,
                 'remote_address': self.remote_address,
-                'timestamp': utils.strtime(self.timestamp),
+                'timestamp': timeutils.strtime(self.timestamp),
                 'request_id': self.request_id,
                 'auth_token': self.auth_token,
-                'quota_class': self.quota_class}
+                'quota_class': self.quota_class,
+                'user_name': self.user_name,
+                'project_name': self.project_name}
 
     @classmethod
     def from_dict(cls, values):

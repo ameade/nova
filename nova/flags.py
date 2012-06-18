@@ -94,10 +94,6 @@ core_opts = [
                default='sqlite:///$state_path/$sqlite_db',
                help='The SQLAlchemy connection string used to connect to the '
                     'database'),
-    cfg.IntOpt('sql_connection_debug',
-               default=0,
-               help='Verbosity of SQL debugging information. 0=None, '
-                    '100=Everything'),
     cfg.StrOpt('api_paste_config',
                default="api-paste.ini",
                help='File name for the paste.deploy config for nova-api'),
@@ -120,6 +116,13 @@ debug_opts = [
     cfg.BoolOpt('fake_network',
                 default=False,
                 help='If passed, use fake network devices and addresses'),
+    cfg.IntOpt('sql_connection_debug',
+               default=0,
+               help='Verbosity of SQL debugging information. 0=None, '
+                    '100=Everything'),
+    cfg.BoolOpt('sql_connection_trace',
+               default=False,
+               help='Add python stack traces to SQL as comment strings'),
 ]
 
 FLAGS.register_cli_opts(log_opts)
@@ -325,7 +328,10 @@ global_opts = [
     cfg.StrOpt('host',
                default=socket.gethostname(),
                help='Name of this node.  This can be an opaque identifier.  '
-                    'It is not necessarily a hostname, FQDN, or IP address.'),
+                    'It is not necessarily a hostname, FQDN, or IP address. '
+                    'However, the node name must be valid within '
+                    'an AMQP key, and if using ZeroMQ, a valid '
+                    'hostname, FQDN, or IP address'),
     cfg.StrOpt('node_availability_zone',
                default='nova',
                help='availability zone of this node'),
@@ -403,9 +409,12 @@ global_opts = [
     cfg.ListOpt('isolated_hosts',
                 default=[],
                 help='Host reserved for specific images'),
-    cfg.BoolOpt('cache_images',
-                default=True,
-                help='Cache glance images locally'),
+    cfg.StrOpt('cache_images',
+                default='all',
+                help='Cache glance images locally. `all` will cache all'
+                     ' images, `some` will only cache images that have the'
+                     ' image_property `cache_in_nova=True`, and `none` turns'
+                     ' off caching entirely'),
     cfg.BoolOpt('use_cow_images',
                 default=True,
                 help='Whether to use cow images'),

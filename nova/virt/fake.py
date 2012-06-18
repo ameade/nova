@@ -36,11 +36,6 @@ from nova.virt import driver
 LOG = logging.getLogger(__name__)
 
 
-def get_connection(_read_only):
-    # The read_only parameter is ignored.
-    return FakeConnection.instance()
-
-
 class FakeInstance(object):
 
     def __init__(self, name, state):
@@ -48,10 +43,10 @@ class FakeInstance(object):
         self.state = state
 
 
-class FakeConnection(driver.ComputeDriver):
+class FakeDriver(driver.ComputeDriver):
     """Fake hypervisor driver"""
 
-    def __init__(self):
+    def __init__(self, read_only=False):
         self.instances = {}
         self.host_status = {
           'host_name-description': 'Fake Host',
@@ -69,12 +64,6 @@ class FakeConnection(driver.ComputeDriver):
           'host_uuid': 'cedb9b39-9388-41df-8891-c5c9a0c0fe5f',
           'host_name_label': 'fake-mini'}
         self._mounts = {}
-
-    @classmethod
-    def instance(cls):
-        if not hasattr(cls, '_instance'):
-            cls._instance = cls()
-        return cls._instance
 
     def init_host(self, host):
         return
@@ -128,6 +117,9 @@ class FakeConnection(driver.ComputeDriver):
     def agent_update(self, instance, url, md5hash):
         pass
 
+    def resume_state_on_host_boot(self, context, instance, network_info):
+        pass
+
     def rescue(self, context, instance, network_info, image_meta):
         pass
 
@@ -145,6 +137,12 @@ class FakeConnection(driver.ComputeDriver):
         pass
 
     def finish_revert_migration(self, instance, network_info):
+        pass
+
+    def power_off(self, instance):
+        pass
+
+    def power_on(self, instance):
         pass
 
     def pause(self, instance):

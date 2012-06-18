@@ -68,6 +68,7 @@ from nova.openstack.common import cfg
 from nova.openstack.common import excutils
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 from nova import rpc
 from nova import utils
 from nova.virt import driver
@@ -234,6 +235,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         #             and re-document the module docstring
         if not compute_driver:
             compute_driver = FLAGS.compute_driver
+
         try:
             self.driver = utils.check_isinstance(
                     importutils.import_object(compute_driver),
@@ -254,19 +256,19 @@ class ComputeManager(manager.SchedulerDependentManager):
         super(ComputeManager, self).__init__(service_name="compute",
                                              *args, **kwargs)
 
-    def _instance_update(self, context, instance_id, **kwargs):
+    def _instance_update(self, context, instance_uuid, **kwargs):
         """Update an instance in the database using kwargs as value."""
 
         (old_ref, instance_ref) = self.db.instance_update_and_get_original(
-                context, instance_id, kwargs)
+                context, instance_uuid, kwargs)
         notifications.send_update(context, old_ref, instance_ref)
 
         return instance_ref
 
     def _set_instance_error_state(self, context, instance_uuid):
         try:
-            self._instance_update(context,
-                    instance_uuid, vm_state=vm_states.ERROR)
+            self._instance_update(context, instance_uuid,
+                                  vm_state=vm_states.ERROR)
         except exception.InstanceNotFound:
             LOG.debug(_('Instance has been destroyed from under us while '
                         'trying to set it to ERROR'),
@@ -287,15 +289,21 @@ class ComputeManager(manager.SchedulerDependentManager):
             LOG.debug(_('Current state is %(drv_state)s, state in DB is '
                         '%(db_state)s.'), locals(), instance=instance)
 
+            net_info = compute_utils.get_nw_info_for_instance(instance)
             if ((expect_running and FLAGS.resume_guests_state_on_host_boot) or
                 FLAGS.start_guests_on_host_boot):
                 LOG.info(_('Rebooting instance after nova-compute restart.'),
                          locals(), instance=instance)
-                self.reboot_instance(context, instance['uuid'])
+                try:
+                    self.driver.resume_state_on_host_boot(context, instance,
+                                self._legacy_nw_info(net_info))
+                except NotImplementedError:
+                    LOG.warning(_('Hypervisor driver does not support '
+                                  'resume guests'), instance=instance)
+
             elif drv_state == power_state.RUNNING:
                 # VMWareAPI drivers will raise an exception
                 try:
-                    net_info = self._get_instance_nw_info(context, instance)
                     self.driver.ensure_filtering_rules_for_instance(instance,
                                                 self._legacy_nw_info(net_info))
                 except NotImplementedError:
@@ -308,7 +316,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         try:
             return self.driver.get_info(instance)["state"]
         except exception.NotFound:
-            return power_state.FAILED
+            return power_state.NOSTATE
 
     def get_console_topic(self, context, **kwargs):
         """Retrieves the console host for a project on this host.
@@ -473,15 +481,15 @@ class ComputeManager(manager.SchedulerDependentManager):
     @manager.periodic_task
     def _check_instance_build_time(self, context):
         """Ensure that instances are not stuck in build."""
-        if FLAGS.instance_build_timeout == 0:
+        timeout = FLAGS.instance_build_timeout
+        if timeout == 0:
             return
 
         filters = {'vm_state': vm_states.BUILDING}
         building_insts = self.db.instance_get_all_by_filters(context, filters)
 
         for instance in building_insts:
-            if utils.is_older_than(instance['created_at'],
-                                   FLAGS.instance_build_timeout):
+            if timeutils.is_older_than(instance['created_at'], timeout):
                 self._set_instance_error_state(context, instance['uuid'])
                 LOG.warn(_("Instance build timed out. Set to error state."),
                          instance=instance)
@@ -636,7 +644,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                                      power_state=current_power_state,
                                      vm_state=vm_states.ACTIVE,
                                      task_state=None,
-                                     launched_at=utils.utcnow())
+                                     launched_at=timeutils.utcnow())
 
     def _notify_about_instance_usage(self, context, instance, event_suffix,
                                      network_info=None, system_metadata=None,
@@ -674,10 +682,15 @@ class ComputeManager(manager.SchedulerDependentManager):
         bdms = self._get_instance_volume_bdms(context, instance_uuid)
         block_device_mapping = []
         for bdm in bdms:
-            cinfo = jsonutils.loads(bdm['connection_info'])
-            block_device_mapping.append({'connection_info': cinfo,
-                                         'mount_device':
-                                         bdm['device_name']})
+            try:
+                cinfo = jsonutils.loads(bdm['connection_info'])
+                block_device_mapping.append({'connection_info': cinfo,
+                                             'mount_device':
+                                             bdm['device_name']})
+            except TypeError:
+                # if the block_device_mapping has no value in connection_info
+                # (returned as None), don't include in the mapping
+                pass
         # NOTE(vish): The mapping is passed in so the driver can disconnect
         #             from remote volumes if necessary
         return {'block_device_mapping': block_device_mapping}
@@ -690,24 +703,10 @@ class ComputeManager(manager.SchedulerDependentManager):
             self._run_instance(context, instance_uuid, **kwargs)
         do_run_instance()
 
-    @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
-    @checks_instance_lock
-    @wrap_instance_fault
-    def start_instance(self, context, instance_uuid):
-        @utils.synchronized(instance_uuid)
-        def do_start_instance():
-            """Starting an instance on this host."""
-            # TODO(yamahata): injected_files isn't supported.
-            #                 Anyway OSAPI doesn't support stop/start yet
-            # FIXME(vish): I've kept the files during stop instance, but
-            #              I think start will fail due to the files still
-            self._run_instance(context, instance_uuid)
-        do_start_instance()
-
-    def _shutdown_instance(self, context, instance, action_str):
+    def _shutdown_instance(self, context, instance):
         """Shutdown an instance on this host."""
         context = context.elevated()
-        LOG.audit(_('%(action_str)s instance') % {'action_str': action_str},
+        LOG.audit(_('%(action_str)s instance') % {'action_str': 'Terminating'},
                   context=context, instance=instance)
 
         self._notify_about_instance_usage(context, instance, "shutdown.start")
@@ -754,13 +753,13 @@ class ComputeManager(manager.SchedulerDependentManager):
         """Delete an instance on this host."""
         instance_uuid = instance['uuid']
         self._notify_about_instance_usage(context, instance, "delete.start")
-        self._shutdown_instance(context, instance, 'Terminating')
+        self._shutdown_instance(context, instance)
         self._cleanup_volumes(context, instance_uuid)
         instance = self._instance_update(context,
-                              instance_uuid,
-                              vm_state=vm_states.DELETED,
-                              task_state=None,
-                              terminated_at=utils.utcnow())
+                                         instance_uuid,
+                                         vm_state=vm_states.DELETED,
+                                         task_state=None,
+                                         terminated_at=timeutils.utcnow())
         # Pull the system_metadata before we delete the instance, so we
         # can pass it to delete.end notification, as it will not be able
         # to look it up anymore, if it needs it.
@@ -793,21 +792,26 @@ class ComputeManager(manager.SchedulerDependentManager):
     @checks_instance_lock
     @wrap_instance_fault
     def stop_instance(self, context, instance_uuid):
-        """Stopping an instance on this host."""
-        @utils.synchronized(instance_uuid)
-        def do_stop_instance():
-            instance = self.db.instance_get_by_uuid(context, instance_uuid)
-            self._shutdown_instance(context, instance, 'Stopping')
-            self._instance_update(context,
-                                  instance_uuid,
-                                  vm_state=vm_states.STOPPED,
-                                  task_state=None)
-        do_stop_instance()
+        """Stopping an instance on this host.
+
+        Alias for power_off_instance for compatibility"""
+        self.power_off_instance(context, instance_uuid,
+                                final_state=vm_states.STOPPED)
 
     @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
     @checks_instance_lock
     @wrap_instance_fault
-    def power_off_instance(self, context, instance_uuid):
+    def start_instance(self, context, instance_uuid):
+        """Starting an instance on this host.
+
+        Alias for power_on_instance for compatibility"""
+        self.power_on_instance(context, instance_uuid)
+
+    @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
+    @checks_instance_lock
+    @wrap_instance_fault
+    def power_off_instance(self, context, instance_uuid,
+                           final_state=vm_states.SOFT_DELETE):
         """Power off an instance on this host."""
         instance = self.db.instance_get_by_uuid(context, instance_uuid)
         self._notify_about_instance_usage(context, instance, "power_off.start")
@@ -816,6 +820,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         self._instance_update(context,
                               instance_uuid,
                               power_state=current_power_state,
+                              vm_state=final_state,
                               task_state=None)
         self._notify_about_instance_usage(context, instance, "power_off.end")
 
@@ -831,6 +836,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         self._instance_update(context,
                               instance_uuid,
                               power_state=current_power_state,
+                              vm_state=vm_states.ACTIVE,
                               task_state=None)
         self._notify_about_instance_usage(context, instance, "power_on.end")
 
@@ -906,9 +912,9 @@ class ComputeManager(manager.SchedulerDependentManager):
         device_info = self._setup_block_device_mapping(context, instance)
 
         instance = self._instance_update(context,
-                              instance_uuid,
-                              vm_state=vm_states.REBUILDING,
-                              task_state=task_states.SPAWNING)
+                                         instance_uuid,
+                                         vm_state=vm_states.REBUILDING,
+                                         task_state=task_states.SPAWNING)
         # pull in new password here since the original password isn't in the db
         instance.admin_pass = kwargs.get('new_pass',
                 utils.generate_password(FLAGS.password_length))
@@ -920,11 +926,11 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         current_power_state = self._get_power_state(context, instance)
         instance = self._instance_update(context,
-                                          instance_uuid,
-                                          power_state=current_power_state,
-                                          vm_state=vm_states.ACTIVE,
-                                          task_state=None,
-                                          launched_at=utils.utcnow())
+                                         instance_uuid,
+                                         power_state=current_power_state,
+                                         vm_state=vm_states.ACTIVE,
+                                         task_state=None,
+                                         launched_at=timeutils.utcnow())
 
         self._notify_about_instance_usage(context, instance, "rebuild.end",
                                           network_info=network_info)
@@ -988,7 +994,7 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         current_power_state = self._get_power_state(context, instance_ref)
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               power_state=current_power_state,
                               vm_state=vm_states.ACTIVE)
 
@@ -1009,7 +1015,8 @@ class ComputeManager(manager.SchedulerDependentManager):
         try:
             self.driver.snapshot(context, instance_ref, image_id)
         finally:
-            self._instance_update(context, instance_ref['id'], task_state=None)
+            self._instance_update(context, instance_ref['uuid'],
+                                  task_state=None)
 
         if image_type == 'snapshot' and rotation:
             raise exception.ImageRotationNotAllowed()
@@ -1092,13 +1099,13 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         for i in xrange(max_tries):
             instance_ref = self.db.instance_get_by_uuid(context, instance_uuid)
-            instance_id = instance_ref["id"]
 
             current_power_state = self._get_power_state(context, instance_ref)
             expected_state = power_state.RUNNING
 
             if current_power_state != expected_state:
-                self._instance_update(context, instance_id, task_state=None)
+                self._instance_update(context, instance_ref['uuid'],
+                                      task_state=None)
                 _msg = _('Failed to set admin password. Instance %s is not'
                          ' running') % instance_ref["uuid"]
                 raise exception.Invalid(_msg)
@@ -1107,7 +1114,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                     self.driver.set_admin_password(instance_ref, new_pass)
                     LOG.audit(_("Root password set"), instance=instance_ref)
                     self._instance_update(context,
-                                          instance_id,
+                                          instance_ref['uuid'],
                                           task_state=None)
                     break
                 except NotImplementedError:
@@ -1116,14 +1123,15 @@ class ComputeManager(manager.SchedulerDependentManager):
                     LOG.warn(_('set_admin_password is not implemented '
                              'by this driver.'), instance=instance_ref)
                     self._instance_update(context,
-                                          instance_id,
+                                          instance_ref['uuid'],
                                           task_state=None)
                     break
                 except Exception, e:
                     # Catch all here because this could be anything.
                     LOG.exception(e, instance=instance_ref)
                     if i == max_tries - 1:
-                        self._set_instance_error_state(context, instance_id)
+                        self._set_instance_error_state(context,
+                                                       instance_ref['uuid'])
                         # We create a new exception here so that we won't
                         # potentially reveal password information to the
                         # API caller.  The real exception is logged above
@@ -1301,7 +1309,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                               root_gb=instance_type['root_gb'],
                               ephemeral_gb=instance_type['ephemeral_gb'],
                               instance_type_id=instance_type['id'],
-                              launched_at=utils.utcnow(),
+                              launched_at=timeutils.utcnow(),
                               vm_state=vm_states.ACTIVE,
                               task_state=None)
 
@@ -1453,7 +1461,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                                           instance_ref.uuid,
                                           vm_state=vm_states.ACTIVE,
                                           host=migration_ref['dest_compute'],
-                                          launched_at=utils.utcnow(),
+                                          launched_at=timeutils.utcnow(),
                                           task_state=task_states.RESIZE_VERIFY)
 
         self.db.migration_update(context, migration_ref.id,
@@ -1547,7 +1555,7 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         current_power_state = self._get_power_state(context, instance_ref)
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               power_state=current_power_state,
                               vm_state=vm_states.PAUSED,
                               task_state=None)
@@ -1565,7 +1573,7 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         current_power_state = self._get_power_state(context, instance_ref)
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               power_state=current_power_state,
                               vm_state=vm_states.ACTIVE,
                               task_state=None)
@@ -1610,7 +1618,7 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         current_power_state = self._get_power_state(context, instance_ref)
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               power_state=current_power_state,
                               vm_state=vm_states.SUSPENDED,
                               task_state=None)
@@ -1630,7 +1638,7 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         current_power_state = self._get_power_state(context, instance_ref)
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               power_state=current_power_state,
                               vm_state=vm_states.ACTIVE,
                               task_state=None)
@@ -1855,7 +1863,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         try:
             instance_ref = self.db.instance_get(context, instance_id)
             bdm = self._get_instance_volume_bdm(context,
-                                                instance_id,
+                                                instance_ref['uuid'],
                                                 volume_id)
             self._detach_volume(context, instance_ref, bdm)
             volume = self.volume_api.get(context, volume_id)
@@ -2159,7 +2167,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         # Restore instance state
         current_power_state = self._get_power_state(context, instance_ref)
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               host=self.host,
                               power_state=current_power_state,
                               vm_state=vm_states.ACTIVE,
@@ -2184,7 +2192,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         """
         host = instance_ref['host']
         self._instance_update(context,
-                              instance_ref['id'],
+                              instance_ref['uuid'],
                               host=host,
                               vm_state=vm_states.ACTIVE,
                               task_state=None)
@@ -2197,11 +2205,8 @@ class ComputeManager(manager.SchedulerDependentManager):
                                                   instance_ref['uuid']):
             volume_id = bdm['volume_id']
             volume = self.volume_api.get(context, volume_id)
-            rpc.call(context,
-                     rpc.queue_get_for(context, FLAGS.compute_topic, dest),
-                     {"method": "remove_volume_connection",
-                      "args": {'instance_id': instance_ref['id'],
-                               'volume_id': volume['id']}})
+            self.compute_rpcapi.remove_volume_connection(context, instance_ref,
+                    volume['id'], dest)
 
         # Block migration needs empty image at destination host
         # before migration starts, so if any failure occurs,
@@ -2384,6 +2389,7 @@ class ComputeManager(manager.SchedulerDependentManager):
             # This will grab info about the host and queue it
             # to be sent to the Schedulers.
             capabilities = _get_additional_capabilities()
+            capabilities['host_ip'] = FLAGS.my_ip
             capabilities.update(self.driver.get_host_stats(refresh=True))
             self.update_service_capabilities(capabilities)
 
@@ -2467,31 +2473,31 @@ class ComputeManager(manager.SchedulerDependentManager):
                 continue
 
             if (vm_power_state in (power_state.NOSTATE,
-                                   power_state.SHUTOFF,
                                    power_state.SHUTDOWN,
                                    power_state.CRASHED)
                 and db_instance['vm_state'] == vm_states.ACTIVE):
                 self._instance_update(context,
-                                      db_instance["id"],
+                                      db_instance['uuid'],
                                       power_state=vm_power_state,
                                       vm_state=vm_states.SHUTOFF)
             else:
                 self._instance_update(context,
-                                      db_instance["id"],
+                                      db_instance['uuid'],
                                       power_state=vm_power_state)
 
     @manager.periodic_task
     def _reclaim_queued_deletes(self, context):
         """Reclaim instances that are queued for deletion."""
-        if FLAGS.reclaim_instance_interval <= 0:
+        interval = FLAGS.reclaim_instance_interval
+        if interval <= 0:
             LOG.debug(_("FLAGS.reclaim_instance_interval <= 0, skipping..."))
             return
 
         instances = self.db.instance_get_all_by_host(context, self.host)
         for instance in instances:
-            old_enough = (not instance.deleted_at or utils.is_older_than(
-                    instance.deleted_at,
-                    FLAGS.reclaim_instance_interval))
+            old_enough = (not instance.deleted_at or
+                          timeutils.is_older_than(instance.deleted_at,
+                                                  interval))
             soft_deleted = instance.vm_state == vm_states.SOFT_DELETE
 
             if soft_deleted and old_enough:
@@ -2572,7 +2578,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                                "'%(name)s' which is marked as "
                                "DELETED but still present on host."),
                              locals(), instance=instance)
-                    self._shutdown_instance(context, instance, 'Terminating')
+                    self._shutdown_instance(context, instance)
                     self._cleanup_volumes(context, instance['uuid'])
                 else:
                     raise Exception(_("Unrecognized value '%(action)s'"
@@ -2586,11 +2592,12 @@ class ComputeManager(manager.SchedulerDependentManager):
         should be pushed down to the virt layer for efficiency.
         """
         def deleted_instance(instance):
+            timeout = FLAGS.running_deleted_instance_timeout
             present = instance.name in present_name_labels
             erroneously_running = instance.deleted and present
-            old_enough = (not instance.deleted_at or utils.is_older_than(
-                instance.deleted_at,
-                FLAGS.running_deleted_instance_timeout))
+            old_enough = (not instance.deleted_at or
+                          timeutils.is_older_than(instance.deleted_at,
+                                                  timeout))
             if erroneously_running and old_enough:
                 return True
             return False

@@ -45,15 +45,14 @@ the Open Attestation project at:
 """
 
 import httplib
-import json
 import socket
 import ssl
 
 from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
+from nova.openstack.common import jsonutils
 from nova.scheduler import filters
-from nova import utils
 
 
 LOG = logging.getLogger(__name__)
@@ -156,7 +155,7 @@ class AttestationService(httplib.HTTPSConnection):
         body = {}
         body['count'] = 1
         body['hosts'] = host
-        cooked = json.dumps(body)
+        cooked = jsonutils.dumps(body)
         headers = {}
         headers['content-type'] = 'application/json'
         headers['Accept'] = 'application/json'
@@ -165,7 +164,7 @@ class AttestationService(httplib.HTTPSConnection):
         status, res = self._do_request(cmd, subcmd, cooked, headers)
         if status == httplib.OK:
             data = res.read()
-            return status, json.loads(data)
+            return status, jsonutils.loads(data)
         else:
             return status, None
 

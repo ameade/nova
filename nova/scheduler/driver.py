@@ -33,8 +33,8 @@ from nova import notifications
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 from nova import rpc
-from nova.rpc import common as rpc_common
 from nova import utils
 
 
@@ -59,7 +59,7 @@ def cast_to_volume_host(context, host, method, update_db=True, **kwargs):
     if update_db:
         volume_id = kwargs.get('volume_id', None)
         if volume_id is not None:
-            now = utils.utcnow()
+            now = timeutils.utcnow()
             db.volume_update(context, volume_id,
                     {'host': host, 'scheduled_at': now})
     rpc.cast(context,
@@ -76,7 +76,7 @@ def cast_to_compute_host(context, host, method, update_db=True, **kwargs):
         instance_id = kwargs.get('instance_id', None)
         instance_uuid = kwargs.get('instance_uuid', instance_id)
         if instance_uuid is not None:
-            now = utils.utcnow()
+            now = timeutils.utcnow()
             db.instance_update(context, instance_uuid,
                     {'host': host, 'scheduled_at': now})
     rpc.cast(context,
@@ -252,9 +252,7 @@ class Scheduler(object):
         """
 
         # Checking instance is running.
-        if instance_ref['power_state'] != power_state.RUNNING and not (
-            FLAGS.libvirt_type == 'xen' and
-            instance_ref['power_state'] == power_state.BLOCKED):
+        if instance_ref['power_state'] != power_state.RUNNING:
             raise exception.InstanceNotRunning(
                     instance_id=instance_ref['uuid'])
 
@@ -444,11 +442,7 @@ class Scheduler(object):
         available = available_gb * (1024 ** 3)
 
         # Getting necessary disk size
-        topic = rpc.queue_get_for(context, FLAGS.compute_topic,
-                                          instance_ref['host'])
-        ret = rpc.call(context, topic,
-                       {"method": 'get_instance_disk_info',
-                        "args": {'instance_name': instance_ref['name']}})
+        ret = self.compute_rpcapi.get_instance_disk_info(context, instance_ref)
         disk_infos = jsonutils.loads(ret)
 
         necessary = 0
@@ -493,21 +487,17 @@ class Scheduler(object):
         """
 
         src = instance_ref['host']
-        dst_t = rpc.queue_get_for(context, FLAGS.compute_topic, dest)
-        src_t = rpc.queue_get_for(context, FLAGS.compute_topic, src)
 
-        filename = rpc.call(context, dst_t,
-                            {"method": 'create_shared_storage_test_file'})
+        filename = self.compute_rpcapi.create_shared_storage_test_file(context,
+                dest)
 
         try:
             # make sure existence at src host.
-            ret = rpc.call(context, src_t,
-                        {"method": 'check_shared_storage_test_file',
-                        "args": {'filename': filename}})
+            ret = self.compute_rpcapi.check_shared_storage_test_file(context,
+                    filename, src)
 
         finally:
-            rpc.cast(context, dst_t,
-                    {"method": 'cleanup_shared_storage_test_file',
-                    "args": {'filename': filename}})
+            self.compute_rpcapi.cleanup_shared_storage_test_file(context,
+                    filename, dest)
 
         return ret

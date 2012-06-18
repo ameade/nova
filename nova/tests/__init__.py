@@ -39,8 +39,17 @@ import shutil
 
 from nova.db.sqlalchemy.session import get_engine
 from nova import flags
+from nova import log as logging
+
+import eventlet
+
+
+eventlet.monkey_patch()
 
 FLAGS = flags.FLAGS
+FLAGS.use_stderr = False
+
+logging.setup()
 
 _DB = None
 
@@ -60,16 +69,12 @@ def reset_db():
 def setup():
     import mox  # Fail fast if you don't have mox. Workaround for bug 810424
 
-    from nova import rpc  # Register rpc_backend before fake_flags sets it
-    FLAGS.register_opts(rpc.rpc_opts)
-
     from nova import context
     from nova import db
     from nova.db import migration
     from nova.network import manager as network_manager
     from nova.tests import fake_flags
     fake_flags.set_defaults(FLAGS)
-    rpc.register_opts(FLAGS)
 
     if FLAGS.sql_connection == "sqlite://":
         if migration.db_version() > migration.INIT_VERSION:

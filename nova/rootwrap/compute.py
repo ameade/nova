@@ -15,8 +15,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
 from nova.rootwrap import filters
+
 
 filterlist = [
     # nova/virt/disk/mount.py: 'kpartx', '-a', device
@@ -187,5 +187,14 @@ filterlist = [
 
     # nova/virt/libvirt/connection.py:
     filters.ReadFileFilter("/etc/iscsi/initiatorname.iscsi"),
+
+    # nova/virt/libvirt/connection.py:
+    filters.CommandFilter("/sbin/lvremove", "root"),
+
+    # nova/virt/libvirt/utils.py:
+    filters.CommandFilter("/sbin/lvcreate", "root"),
+
+    # nova/virt/libvirt/utils.py:
+    filters.CommandFilter("/sbin/vgs", "root")
 
     ]

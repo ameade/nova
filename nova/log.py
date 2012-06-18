@@ -32,7 +32,6 @@ It also allows setting of formatting information through flags.
 import cStringIO
 import inspect
 import itertools
-import json
 import logging
 import logging.config
 import logging.handlers
@@ -44,6 +43,7 @@ import traceback
 import nova
 from nova import flags
 from nova.openstack.common import cfg
+from nova.openstack.common import jsonutils
 from nova.openstack.common import local
 from nova import version
 
@@ -222,7 +222,7 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info:
             message['traceback'] = self.formatException(record.exc_info)
 
-        return json.dumps(message)
+        return jsonutils.dumps(message)
 
 
 class LegacyNovaFormatter(logging.Formatter):
@@ -277,6 +277,21 @@ class LegacyNovaFormatter(logging.Formatter):
             fl = '%s%s' % (pl, line)
             formatted_lines.append(fl)
         return '\n'.join(formatted_lines)
+
+
+class NovaColorHandler(logging.StreamHandler):
+    LEVEL_COLORS = {
+        logging.DEBUG: '\033[00;32m',  # GREEN
+        logging.INFO: '\033[00;36m',  # CYAN
+        logging.AUDIT: '\033[01;36m',  # BOLD CYAN
+        logging.WARN: '\033[01;33m',  # BOLD YELLOW
+        logging.ERROR: '\033[01;31m',  # BOLD RED
+        logging.CRITICAL: '\033[01;31m',  # BOLD RED
+    }
+
+    def format(self, record):
+        record.color = self.LEVEL_COLORS[record.levelno]
+        return logging.StreamHandler.format(self, record)
 
 
 class PublishErrorsHandler(logging.Handler):
@@ -357,11 +372,13 @@ def _setup_logging_from_flags():
             os.chmod(logpath, mode)
 
     if FLAGS.use_stderr:
-        streamlog = logging.StreamHandler()
+        streamlog = NovaColorHandler()
         nova_root.addHandler(streamlog)
 
     elif not FLAGS.log_file:
-        streamlog = logging.StreamHandler(stream=sys.stdout)
+        # pass sys.stdout as a positional argument
+        # python2.6 calls the argument strm, in 2.7 it's stream
+        streamlog = logging.StreamHandler(sys.stdout)
         nova_root.addHandler(streamlog)
 
     if FLAGS.publish_errors:

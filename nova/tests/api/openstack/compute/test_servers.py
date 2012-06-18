@@ -17,7 +17,6 @@
 #    under the License.
 
 import datetime
-import json
 import urlparse
 
 import iso8601
@@ -37,6 +36,7 @@ import nova.db
 from nova.db.sqlalchemy import models
 from nova import flags
 import nova.image.fake
+from nova.openstack.common import jsonutils
 import nova.rpc
 from nova import test
 from nova.tests.api.openstack import fakes
@@ -52,6 +52,8 @@ XPATH_NS = {
     'atom': 'http://www.w3.org/2005/Atom',
     'ns': 'http://docs.openstack.org/compute/api/v1.1'
 }
+
+INSTANCE_IDS = {FAKE_UUID: 1}
 
 
 def fake_gen_uuid():
@@ -71,8 +73,9 @@ def return_security_group(context, instance_id, security_group_id):
     pass
 
 
-def instance_update(context, instance_id, values):
-    inst = fakes.stub_instance(instance_id, name=values.get('display_name'))
+def instance_update(context, instance_uuid, values):
+    inst = fakes.stub_instance(INSTANCE_IDS.get(instance_uuid),
+                               name=values.get('display_name'))
     return (inst, inst)
 
 
@@ -872,7 +875,7 @@ class ServersControllerTest(test.TestCase):
                   'accessIPv4': '0.0.0.0',
                   'accessIPv6': 'beef::0123',
                }}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.update(req, FAKE_UUID, body)
 
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
@@ -887,7 +890,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'name': 'server_test'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.update(req, FAKE_UUID, body)
 
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
@@ -900,7 +903,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'name': 'x' * 256}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
                             req, FAKE_UUID, body)
 
@@ -911,7 +914,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'accessIPv4': '0.0.0.0'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.update(req, FAKE_UUID, body)
 
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
@@ -924,7 +927,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'accessIPv4': 'bad_format'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
                             req, FAKE_UUID, body)
 
@@ -935,7 +938,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'accessIPv6': 'beef::0123'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.update(req, FAKE_UUID, body)
 
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
@@ -948,7 +951,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'accessIPv6': 'bad_format'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
                             req, FAKE_UUID, body)
 
@@ -972,7 +975,7 @@ class ServersControllerTest(test.TestCase):
         req = fakes.HTTPRequest.blank('/v2/fake/servers/%s' % FAKE_UUID)
         req.method = 'PUT'
         req.content_type = "application/json"
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.update(req, FAKE_UUID, body)
 
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
@@ -987,7 +990,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'name': 'server_test'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPNotFound, self.controller.update,
                           req, FAKE_UUID, body)
 
@@ -1000,7 +1003,7 @@ class ServersControllerTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = 'application/json'
         body = {'server': {'name': 'server_test'}}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPNotFound, self.controller.update,
                           req, FAKE_UUID, body)
 
@@ -1033,7 +1036,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1067,7 +1070,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1101,7 +1104,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1135,7 +1138,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1162,7 +1165,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1189,7 +1192,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1223,7 +1226,7 @@ class ServersControllerTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers/a/action')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
             self.controller._action_rebuild, req, FAKE_UUID, body)
@@ -1298,7 +1301,7 @@ class ServersControllerTest(test.TestCase):
         self.stubs.Set(nova.db, 'instance_get_by_uuid',
                 fakes.fake_instance_get(vm_state=vm_states.ACTIVE))
 
-        def instance_destroy_mock(context, id):
+        def instance_destroy_mock(*args, **kwargs):
             self.server_delete_called = True
         self.stubs.Set(nova.db, 'instance_destroy', instance_destroy_mock)
 
@@ -1313,7 +1316,7 @@ class ServersControllerTest(test.TestCase):
 
         self.server_delete_called = False
 
-        def instance_destroy_mock(context, id):
+        def instance_destroy_mock(*args, **kwargs):
             self.server_delete_called = True
         self.stubs.Set(nova.db, 'instance_destroy', instance_destroy_mock)
 
@@ -1411,7 +1414,8 @@ class ServersControllerCreateTest(test.TestCase):
         self.flags(verbose=True,
                    enable_instance_password=True)
         self.instance_cache_num = 0
-        self.instance_cache = {}
+        self.instance_cache_by_id = {}
+        self.instance_cache_by_uuid = {}
 
         self.controller = servers.Controller()
 
@@ -1439,14 +1443,16 @@ class ServersControllerCreateTest(test.TestCase):
                 "task_state": "",
                 "vm_state": "",
             }
-            self.instance_cache[instance['id']] = instance
+
+            self.instance_cache_by_id[instance['id']] = instance
+            self.instance_cache_by_uuid[instance['uuid']] = instance
             return instance
 
         def instance_get(context, instance_id):
             """Stub for compute/api create() pulling in instance after
             scheduling
             """
-            return self.instance_cache[instance_id]
+            return self.instance_cache_by_id[instance_id]
 
         def rpc_call_wrapper(context, topic, msg, timeout=None):
             """Stub out the scheduler creating the instance entry"""
@@ -1460,8 +1466,8 @@ class ServersControllerCreateTest(test.TestCase):
                         request_spec['instance_properties']))
                 return instances
 
-        def server_update(context, instance_id, params):
-            inst = self.instance_cache[instance_id]
+        def server_update(context, instance_uuid, params):
+            inst = self.instance_cache_by_uuid[instance_uuid]
             inst.update(params)
             return (inst, inst)
 
@@ -1517,7 +1523,7 @@ class ServersControllerCreateTest(test.TestCase):
             personality={}))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         server = self.controller.create(req, body).obj['server']
 
@@ -1538,7 +1544,7 @@ class ServersControllerCreateTest(test.TestCase):
         }
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create,
@@ -1565,7 +1571,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1593,7 +1599,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1621,7 +1627,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body)
 
@@ -1644,7 +1650,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1665,7 +1671,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                           req, body)
@@ -1703,7 +1709,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1743,7 +1749,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1780,7 +1786,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                             req, body)
@@ -1814,7 +1820,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                             req, body)
@@ -1845,7 +1851,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                             req, body)
@@ -1876,7 +1882,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1911,7 +1917,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -1939,7 +1945,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
@@ -1963,7 +1969,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -1987,7 +1993,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2011,7 +2017,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2025,7 +2031,7 @@ class ServersControllerCreateTest(test.TestCase):
             key_name='nonexistentkey'))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2039,7 +2045,7 @@ class ServersControllerCreateTest(test.TestCase):
             key_name='key'))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2055,7 +2061,7 @@ class ServersControllerCreateTest(test.TestCase):
             personality={}))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2070,7 +2076,7 @@ class ServersControllerCreateTest(test.TestCase):
             personality={}))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2085,7 +2091,7 @@ class ServersControllerCreateTest(test.TestCase):
             personality={}))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2110,7 +2116,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2136,7 +2142,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2162,7 +2168,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2187,7 +2193,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2203,7 +2209,7 @@ class ServersControllerCreateTest(test.TestCase):
             personality={}))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2222,7 +2228,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2242,7 +2248,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2263,7 +2269,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = "application/json"
         res = self.controller.create(req, body).obj
 
@@ -2284,7 +2290,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = "application/json"
 
         # The fact that the action doesn't raise is enough validation
@@ -2294,7 +2300,7 @@ class ServersControllerCreateTest(test.TestCase):
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
         body = {'server': 'string'}
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -2326,7 +2332,7 @@ class ServersControllerCreateTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = 'application/json'
         robj = self.controller.create(req, body)
 
@@ -2341,14 +2347,15 @@ class ServersControllerCreateTest(test.TestCase):
             personality={}))
         req = fakes.HTTPRequest.blank('/v2/fake/servers')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         try:
             server = self.controller.create(req, body).obj['server']
             self.fail('expected quota to be exceeded')
         except webob.exc.HTTPRequestEntityTooLarge as e:
             self.assertEquals(e.explanation,
-                      _('Quota exceeded: already used 1 of 1 instances'))
+                      _('Quota exceeded for instances: Requested 1, but'
+                        ' already used 0 of 0 instances'))
 
 
 class TestServerCreateRequestXMLDeserializer(test.TestCase):

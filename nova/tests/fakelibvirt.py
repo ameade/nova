@@ -288,6 +288,11 @@ class Domain(object):
         self._state = VIR_DOMAIN_SHUTDOWN
         self._connection._mark_not_running(self)
 
+    def reset(self, flags):
+        # FIXME: Not handling flags at the moment
+        self._state = VIR_DOMAIN_RUNNING
+        self._connection._mark_running(self)
+
     def info(self):
         return [self._state,
                 long(self._def['memory']),
@@ -503,6 +508,9 @@ class Connection(object):
     def getType(self):
         if self._uri == 'qemu:///system':
             return 'QEMU'
+
+    def getLibVersion(self):
+        return 9007
 
     def getVersion(self):
         return 14000

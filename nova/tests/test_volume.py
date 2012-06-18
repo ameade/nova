@@ -48,7 +48,7 @@ class VolumeTestCase(test.TestCase):
     def setUp(self):
         super(VolumeTestCase, self).setUp()
         self.compute = importutils.import_object(FLAGS.compute_manager)
-        self.flags(connection_type='fake')
+        self.flags(compute_driver='nova.virt.fake.FakeDriver')
         self.stubs.Set(nova.flags.FLAGS, 'notification_driver',
                 'nova.notifier.test_notifier')
         self.volume = importutils.import_object(FLAGS.volume_manager)
@@ -59,7 +59,7 @@ class VolumeTestCase(test.TestCase):
         test_notifier.NOTIFICATIONS = []
 
     def tearDown(self):
-        db.instance_destroy(self.context, self.instance_id)
+        db.instance_destroy(self.context, self.instance_uuid)
         super(VolumeTestCase, self).tearDown()
 
     @staticmethod
@@ -239,7 +239,7 @@ class VolumeTestCase(test.TestCase):
                           db.volume_get,
                           self.context,
                           volume_id)
-        db.instance_destroy(self.context, instance_id)
+        db.instance_destroy(self.context, instance_uuid)
 
     def test_concurrent_volumes_get_different_targets(self):
         """Ensure multiple concurrent volumes get different targets."""

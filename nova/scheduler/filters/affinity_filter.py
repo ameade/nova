@@ -35,13 +35,12 @@ class DifferentHostFilter(AffinityFilter):
 
     def host_passes(self, host_state, filter_properties):
         context = filter_properties['context']
-        scheduler_hints = filter_properties['scheduler_hints']
+        scheduler_hints = filter_properties.get('scheduler_hints') or {}
         me = host_state.host
 
         affinity_uuids = scheduler_hints.get('different_host', [])
         if affinity_uuids:
-            return not any([i for i
-                              in affinity_uuids
+            return not any([i for i in affinity_uuids
                               if self._affinity_host(context, i) == me])
         # With no different_host key
         return True
@@ -54,7 +53,7 @@ class SameHostFilter(AffinityFilter):
 
     def host_passes(self, host_state, filter_properties):
         context = filter_properties['context']
-        scheduler_hints = filter_properties['scheduler_hints']
+        scheduler_hints = filter_properties.get('scheduler_hints') or {}
         me = host_state.host
 
         affinity_uuids = scheduler_hints.get('same_host', [])
@@ -68,14 +67,16 @@ class SameHostFilter(AffinityFilter):
 
 class SimpleCIDRAffinityFilter(AffinityFilter):
     def host_passes(self, host_state, filter_properties):
-        scheduler_hints = filter_properties['scheduler_hints']
+        scheduler_hints = filter_properties.get('scheduler_hints') or {}
 
         affinity_cidr = scheduler_hints.get('cidr', '/24')
         affinity_host_addr = scheduler_hints.get('build_near_host_ip')
+        host_ip = host_state.capabilities.get('host_ip')
         if affinity_host_addr:
             affinity_net = netaddr.IPNetwork(str.join('', (affinity_host_addr,
                                                            affinity_cidr)))
-            return netaddr.IPAddress(flags.FLAGS.my_ip) in affinity_net
+
+            return netaddr.IPAddress(host_ip) in affinity_net
 
         # We don't have an affinity host address.
         return True

@@ -24,8 +24,6 @@ inline callbacks.
 """
 
 import functools
-import os
-import shutil
 import unittest
 import uuid
 
@@ -37,10 +35,10 @@ from nova import flags
 import nova.image.fake
 from nova import log as logging
 from nova.openstack.common import cfg
+from nova.openstack.common import timeutils
 from nova import service
 from nova import tests
 from nova.tests import fake_flags
-from nova import utils
 from nova.virt import fake
 
 
@@ -133,7 +131,7 @@ class TestCase(unittest.TestCase):
         # NOTE(vish): We need a better method for creating fixtures for tests
         #             now that we have some required db setup for the system
         #             to work properly.
-        self.start = utils.utcnow()
+        self.start = timeutils.utcnow()
         tests.reset_db()
 
         # emulate some of the mox stuff, we can't use the metaclass
@@ -152,10 +150,6 @@ class TestCase(unittest.TestCase):
             self.mox.VerifyAll()
             super(TestCase, self).tearDown()
         finally:
-            if FLAGS.connection_type == 'fake':
-                if hasattr(fake.FakeConnection, '_instance'):
-                    del fake.FakeConnection._instance
-
             if FLAGS.image_service == 'nova.image.fake.FakeImageService':
                 nova.image.fake.FakeImageService_reset()
 
@@ -295,3 +289,30 @@ class TestCase(unittest.TestCase):
             self.assertFalse(a in b, *args, **kwargs)
         else:
             f(a, b, *args, **kwargs)
+
+    def assertNotRaises(self, exc_class, func, *args, **kwargs):
+        """Assert that a particular exception is not raised.
+
+        If exc_class is None, then we assert that *no* error is raised.
+
+        Otherwise, we assert that only a particular error wasn't raised;
+        if any different exceptions were raised, we just silently capture
+        them and return.
+        """
+        exc_msg = kwargs.pop('exc_msg', '')
+
+        if exc_class is None:
+            # Ensure no errors were raised
+            try:
+                return func(*args, **kwargs)
+            except Exception:
+                raise
+                raise AssertionError(exc_msg)
+        else:
+            # Ensure a specific error wasn't raised
+            try:
+                return func(*args, **kwargs)
+            except exc_class:
+                raise AssertionError(exc_msg)
+            except Exception:
+                pass  # Any other errors are fine

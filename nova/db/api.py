@@ -87,6 +87,32 @@ class NoMoreTargets(exception.NovaException):
 ###################
 
 
+def constraint(**conditions):
+    """Return a constraint object suitable for use with some updates."""
+    return IMPL.constraint(**conditions)
+
+
+def equal_any(*values):
+    """Return an equality condition object suitable for use in a constraint.
+
+    Equal_any conditions require that a model object's attribute equal any
+    one of the given values.
+    """
+    return IMPL.equal_any(*values)
+
+
+def not_equal(*values):
+    """Return an inequality condition object suitable for use in a constraint.
+
+    Not_equal conditions require that a model object's attribute differs from
+    all of the given values.
+    """
+    return IMPL.not_equal(*values)
+
+
+###################
+
+
 def service_destroy(context, instance_id):
     """Destroy the service or raise if it does not exist."""
     return IMPL.service_destroy(context, instance_id)
@@ -160,11 +186,6 @@ def service_update(context, service_id, values):
 
 
 ###################
-
-
-def compute_node_get(context, compute_id):
-    """Get a computeNode or raise if it does not exist."""
-    return IMPL.compute_node_get(context, compute_id)
 
 
 def compute_node_get_all(context):
@@ -527,9 +548,9 @@ def instance_data_get_for_project(context, project_id, session=None):
                                               session=session)
 
 
-def instance_destroy(context, instance_id):
+def instance_destroy(context, instance_uuid, constraint=None):
     """Destroy the instance or raise if it does not exist."""
-    return IMPL.instance_destroy(context, instance_id)
+    return IMPL.instance_destroy(context, instance_uuid, constraint)
 
 
 def instance_get_by_uuid(context, uuid):
@@ -600,25 +621,25 @@ def instance_get_all_hung_in_rebooting(context, reboot_window):
     return IMPL.instance_get_all_hung_in_rebooting(context, reboot_window)
 
 
-def instance_test_and_set(context, instance_id, attr, ok_states,
+def instance_test_and_set(context, instance_uuid, attr, ok_states,
                           new_state):
     """Atomically check if an instance is in a valid state, and if it is, set
     the instance into a new state.
     """
-    return IMPL.instance_test_and_set(
-            context, instance_id, attr, ok_states, new_state)
+    return IMPL.instance_test_and_set(context, instance_uuid, attr,
+                                      ok_states, new_state)
 
 
-def instance_update(context, instance_id, values):
+def instance_update(context, instance_uuid, values):
     """Set the given properties on an instance and update it.
 
     Raises NotFound if instance does not exist.
 
     """
-    return IMPL.instance_update(context, instance_id, values)
+    return IMPL.instance_update(context, instance_uuid, values)
 
 
-def instance_update_and_get_original(context, instance_id, values):
+def instance_update_and_get_original(context, instance_uuid, values):
     """Set the given properties on an instance and update it. Return
     a shallow copy of the original instance reference, as well as the
     updated one.
@@ -631,7 +652,8 @@ def instance_update_and_get_original(context, instance_id, values):
 
     Raises NotFound if instance does not exist.
     """
-    return IMPL.instance_update_and_get_original(context, instance_id, values)
+    return IMPL.instance_update_and_get_original(context, instance_uuid,
+                                                 values)
 
 
 def instance_add_security_group(context, instance_id, security_group_id):
@@ -1327,11 +1349,6 @@ def user_get(context, id):
     return IMPL.user_get(context, id)
 
 
-def user_get_by_uid(context, uid):
-    """Get user by uid."""
-    return IMPL.user_get_by_uid(context, uid)
-
-
 def user_get_by_access_key(context, access_key):
     """Get user by access key."""
     return IMPL.user_get_by_access_key(context, access_key)
@@ -1448,11 +1465,6 @@ def console_pool_create(context, values):
     return IMPL.console_pool_create(context, values)
 
 
-def console_pool_get(context, pool_id):
-    """Get a console pool."""
-    return IMPL.console_pool_get(context, pool_id)
-
-
 def console_pool_get_by_host_type(context, compute_host, proxy_host,
                                   console_type):
     """Fetch a console pool for a given proxy host, compute host, and type."""
@@ -1479,19 +1491,19 @@ def console_delete(context, console_id):
     return IMPL.console_delete(context, console_id)
 
 
-def console_get_by_pool_instance(context, pool_id, instance_id):
+def console_get_by_pool_instance(context, pool_id, instance_uuid):
     """Get console entry for a given instance and pool."""
-    return IMPL.console_get_by_pool_instance(context, pool_id, instance_id)
+    return IMPL.console_get_by_pool_instance(context, pool_id, instance_uuid)
 
 
-def console_get_all_by_instance(context, instance_id):
+def console_get_all_by_instance(context, instance_uuid):
     """Get consoles for a given instance."""
-    return IMPL.console_get_all_by_instance(context, instance_id)
+    return IMPL.console_get_all_by_instance(context, instance_uuid)
 
 
-def console_get(context, console_id, instance_id=None):
+def console_get(context, console_id, instance_uuid=None):
     """Get a specific console (possibly on a given instance)."""
-    return IMPL.console_get(context, console_id, instance_id)
+    return IMPL.console_get(context, console_id, instance_uuid)
 
 
     ##################
@@ -1531,47 +1543,19 @@ def instance_type_destroy(context, name):
 ####################
 
 
-def cell_create(context, values):
-    """Create a new child Cell entry."""
-    return IMPL.cell_create(context, values)
-
-
-def cell_update(context, cell_id, values):
-    """Update a child Cell entry."""
-    return IMPL.cell_update(context, cell_id, values)
-
-
-def cell_delete(context, cell_id):
-    """Delete a child Cell."""
-    return IMPL.cell_delete(context, cell_id)
-
-
-def cell_get(context, cell_id):
-    """Get a specific child Cell."""
-    return IMPL.cell_get(context, cell_id)
-
-
-def cell_get_all(context):
-    """Get all child Cells."""
-    return IMPL.cell_get_all(context)
-
-
-####################
-
-
-def instance_metadata_get(context, instance_id):
+def instance_metadata_get(context, instance_uuid):
     """Get all metadata for an instance."""
-    return IMPL.instance_metadata_get(context, instance_id)
+    return IMPL.instance_metadata_get(context, instance_uuid)
 
 
-def instance_metadata_delete(context, instance_id, key):
+def instance_metadata_delete(context, instance_uuid, key):
     """Delete the given metadata item."""
-    IMPL.instance_metadata_delete(context, instance_id, key)
+    IMPL.instance_metadata_delete(context, instance_uuid, key)
 
 
-def instance_metadata_update(context, instance_id, metadata, delete):
+def instance_metadata_update(context, instance_uuid, metadata, delete):
     """Update metadata if it exists, otherwise create it."""
-    IMPL.instance_metadata_update(context, instance_id, metadata, delete)
+    IMPL.instance_metadata_update(context, instance_uuid, metadata, delete)
 
 
 ####################

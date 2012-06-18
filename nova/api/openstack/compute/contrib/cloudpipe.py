@@ -16,19 +16,20 @@
 
 import os
 
-from nova.api.openstack import common
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova.auth import manager
 from nova.cloudpipe import pipelib
 from nova import compute
+from nova.compute import utils as compute_utils
 from nova.compute import vm_states
 from nova import db
 from nova import exception
 from nova import flags
 from nova import log as logging
 from nova import network
+from nova.openstack.common import timeutils
 from nova import utils
 
 
@@ -90,8 +91,8 @@ class CloudpipeController(object):
             rv['state'] = 'pending'
             return rv
         rv['instance_id'] = instance['uuid']
-        rv['created_at'] = utils.isotime(instance['created_at'])
-        nw_info = common.get_nw_info_for_instance(elevated, instance)
+        rv['created_at'] = timeutils.isotime(instance['created_at'])
+        nw_info = compute_utils.get_nw_info_for_instance(instance)
         if not nw_info:
             return rv
         vif = nw_info[0]

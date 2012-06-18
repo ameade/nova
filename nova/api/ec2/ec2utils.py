@@ -81,6 +81,13 @@ def ec2_id_to_id(ec2_id):
         raise exception.InvalidEc2Id(ec2_id=ec2_id)
 
 
+def ec2_id_to_uuid(context, ec2_id):
+    """Convert an ec2 ID into an instance UUID"""
+    instance_id = ec2_id_to_id(ec2_id)
+    instance = db.instance_get(context, instance_id)
+    return instance['uuid']
+
+
 def image_ec2_id(image_id, image_type='ami'):
     """Returns image ec2_id using id and three letter type."""
     template = image_type + '-%08x'
@@ -138,7 +145,7 @@ def id_to_ec2_snap_id(snapshot_id):
     if utils.is_uuid_like(snapshot_id):
         ctxt = context.get_admin_context()
         int_id = get_int_id_from_snapshot_uuid(ctxt, snapshot_id)
-        return id_to_ec2_id(int_id)
+        return id_to_ec2_id(int_id, 'snap-%08x')
     else:
         return id_to_ec2_id(snapshot_id, 'snap-%08x')
 
@@ -148,7 +155,7 @@ def id_to_ec2_vol_id(volume_id):
     if utils.is_uuid_like(volume_id):
         ctxt = context.get_admin_context()
         int_id = get_int_id_from_volume_uuid(ctxt, volume_id)
-        return id_to_ec2_id(int_id)
+        return id_to_ec2_id(int_id, 'vol-%08x')
     else:
         return id_to_ec2_id(volume_id, 'vol-%08x')
 
@@ -168,7 +175,7 @@ def get_int_id_from_volume_uuid(context, volume_uuid):
     try:
         return db.get_ec2_volume_id_by_uuid(context, volume_uuid)
     except exception.NotFound:
-        raise exception.VolumeNotFound()
+        return db.ec2_volume_create(context, volume_uuid)['id']
 
 
 def get_volume_uuid_from_int_id(context, int_id):
@@ -190,7 +197,7 @@ def get_int_id_from_snapshot_uuid(context, snapshot_uuid):
     try:
         return db.get_ec2_snapshot_id_by_uuid(context, snapshot_uuid)
     except exception.NotFound:
-        raise exception.SnapshotNotFound()
+        return db.ec2_snapshot_create(context, snapshot_uuid)['id']
 
 
 def get_snapshot_uuid_from_int_id(context, int_id):

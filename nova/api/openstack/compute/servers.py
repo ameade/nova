@@ -32,6 +32,7 @@ from nova.compute import instance_types
 from nova import exception
 from nova import flags
 from nova import log as logging
+from nova.openstack.common import timeutils
 from nova.rpc import common as rpc_common
 from nova import utils
 
@@ -426,7 +427,7 @@ class Controller(wsgi.Controller):
 
         if 'changes-since' in search_opts:
             try:
-                parsed = utils.parse_isotime(search_opts['changes-since'])
+                parsed = timeutils.parse_isotime(search_opts['changes-since'])
             except ValueError:
                 msg = _('Invalid changes-since value')
                 raise exc.HTTPBadRequest(explanation=msg)
@@ -676,7 +677,7 @@ class Controller(wsgi.Controller):
 
         try:
             _get_inst_type = instance_types.get_instance_type_by_flavor_id
-            inst_type = _get_inst_type(flavor_id)
+            inst_type = _get_inst_type(flavor_id, read_deleted="no")
 
             (instances, resv_id) = self.compute_api.create(context,
                             inst_type,
@@ -703,6 +704,8 @@ class Controller(wsgi.Controller):
             raise exc.HTTPRequestEntityTooLarge(explanation=unicode(error),
                                                 headers={'Retry-After': 0})
         except exception.InstanceTypeMemoryTooSmall as error:
+            raise exc.HTTPBadRequest(explanation=unicode(error))
+        except exception.InstanceTypeNotFound as error:
             raise exc.HTTPBadRequest(explanation=unicode(error))
         except exception.InstanceTypeDiskTooSmall as error:
             raise exc.HTTPBadRequest(explanation=unicode(error))

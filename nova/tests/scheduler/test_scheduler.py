@@ -19,8 +19,6 @@
 Tests For Scheduler
 """
 
-import json
-
 from nova.compute import api as compute_api
 from nova.compute import power_state
 from nova.compute import rpcapi as compute_rpcapi
@@ -29,7 +27,8 @@ from nova import context
 from nova import db
 from nova import exception
 from nova import flags
-from nova import notifications
+from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 from nova import rpc
 from nova.rpc import common as rpc_common
 from nova.scheduler import driver
@@ -469,6 +468,29 @@ class SchedulerTestCase(test.TestCase):
                 block_migration=block_migration,
                 disk_over_commit=disk_over_commit)
 
+    def _check_shared_storage(self, dest, instance, check_result):
+        tmp_filename = 'test-filename'
+        rpc.queue_get_for(self.context, FLAGS.compute_topic,
+                dest).AndReturn('dest_queue')
+        rpc.call(self.context, 'dest_queue',
+                {'method': 'create_shared_storage_test_file',
+                 'args': {},
+                 'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION}, None
+                ).AndReturn(tmp_filename)
+        rpc.queue_get_for(self.context, FLAGS.compute_topic,
+                instance['host']).AndReturn('src_queue')
+        rpc.call(self.context, 'src_queue',
+                {'method': 'check_shared_storage_test_file',
+                 'args': {'filename': tmp_filename},
+                 'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION}, None
+                ).AndReturn(check_result)
+        rpc.queue_get_for(self.context, FLAGS.compute_topic,
+                dest).AndReturn('dest_queue')
+        rpc.cast(self.context, 'dest_queue',
+                {'method': 'cleanup_shared_storage_test_file',
+                 'args': {'filename': tmp_filename},
+                 'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION})
+
     def test_live_migration_all_checks_pass(self):
         """Test live migration when all checks pass."""
 
@@ -507,26 +529,22 @@ class SchedulerTestCase(test.TestCase):
                 'disk_available_least').AndReturn(1025)
         rpc.queue_get_for(self.context, FLAGS.compute_topic,
                 instance['host']).AndReturn('src_queue1')
-        rpc.call(self.context, 'src_queue1',
-                {'method': 'get_instance_disk_info',
-                 'args': {'instance_name': instance['name']}}).AndReturn(
-                        json.dumps([{'disk_size': 1024 * (1024 ** 3)}]))
+        instance_disk_info_msg = {
+            'method': 'get_instance_disk_info',
+            'args': {
+                'instance_name': instance['name'],
+            },
+            'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION,
+        }
+        instance_disk_info = [{'disk_size': 1024 * (1024 ** 3)}]
+        rpc.call(self.context,
+                 'src_queue1',
+                 instance_disk_info_msg,
+                 None).AndReturn(jsonutils.dumps(instance_disk_info))
 
-        # Common checks (shared storage ok, same hypervisor,e tc)
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                dest).AndReturn('dest_queue')
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                instance['host']).AndReturn('src_queue')
-        tmp_filename = 'test-filename'
-        rpc.call(self.context, 'dest_queue',
-                {'method': 'create_shared_storage_test_file'}
-                ).AndReturn(tmp_filename)
-        rpc.call(self.context, 'src_queue',
-                {'method': 'check_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}}).AndReturn(False)
-        rpc.cast(self.context, 'dest_queue',
-                {'method': 'cleanup_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}})
+        # Common checks (shared storage ok, same hypervisor, etc)
+        self._check_shared_storage(dest, instance, False)
+
         db.service_get_all_compute_by_host(self.context, dest).AndReturn(
                 [{'compute_node': [{'hypervisor_type': 'xen',
                                     'hypervisor_version': 1}]}])
@@ -722,10 +740,18 @@ class SchedulerTestCase(test.TestCase):
                 'disk_available_least').AndReturn(1023)
         rpc.queue_get_for(self.context, FLAGS.compute_topic,
                 instance['host']).AndReturn('src_queue')
-        rpc.call(self.context, 'src_queue',
-                {'method': 'get_instance_disk_info',
-                 'args': {'instance_name': instance['name']}}).AndReturn(
-                        json.dumps([{'disk_size': 1024 * (1024 ** 3)}]))
+        instance_disk_info_msg = {
+            'method': 'get_instance_disk_info',
+            'args': {
+                'instance_name': instance['name'],
+            },
+            'version': compute_rpcapi.ComputeAPI.RPC_API_VERSION,
+        }
+        instance_disk_info = [{'disk_size': 1024 * (1024 ** 3)}]
+        rpc.call(self.context,
+                 'src_queue',
+                 instance_disk_info_msg,
+                 None).AndReturn(jsonutils.dumps(instance_disk_info))
 
         self.mox.ReplayAll()
         self.assertRaises(exception.MigrationError,
@@ -754,20 +780,7 @@ class SchedulerTestCase(test.TestCase):
         self.driver._live_migration_dest_check(self.context, instance,
                 dest, block_migration, disk_over_commit)
 
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                dest).AndReturn('dest_queue')
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                instance['host']).AndReturn('src_queue')
-        tmp_filename = 'test-filename'
-        rpc.call(self.context, 'dest_queue',
-                {'method': 'create_shared_storage_test_file'}
-                ).AndReturn(tmp_filename)
-        rpc.call(self.context, 'src_queue',
-                {'method': 'check_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}}).AndReturn(False)
-        rpc.cast(self.context, 'dest_queue',
-                {'method': 'cleanup_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}})
+        self._check_shared_storage(dest, instance, False)
 
         self.mox.ReplayAll()
         self.assertRaises(exception.InvalidSharedStorage,
@@ -796,20 +809,7 @@ class SchedulerTestCase(test.TestCase):
         self.driver._live_migration_dest_check(self.context, instance,
                 dest, block_migration, disk_over_commit)
 
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                dest).AndReturn('dest_queue')
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                instance['host']).AndReturn('src_queue')
-        tmp_filename = 'test-filename'
-        rpc.call(self.context, 'dest_queue',
-                {'method': 'create_shared_storage_test_file'}
-                ).AndReturn(tmp_filename)
-        rpc.call(self.context, 'src_queue',
-                {'method': 'check_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}}).AndReturn(False)
-        rpc.cast(self.context, 'dest_queue',
-                {'method': 'cleanup_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}})
+        self._check_shared_storage(dest, instance, False)
 
         self.mox.ReplayAll()
         self.assertRaises(exception.InvalidSharedStorage,
@@ -837,20 +837,8 @@ class SchedulerTestCase(test.TestCase):
         self.driver._live_migration_dest_check(self.context, instance,
                 dest, block_migration, disk_over_commit)
 
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                dest).AndReturn('dest_queue')
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                instance['host']).AndReturn('src_queue')
-        tmp_filename = 'test-filename'
-        rpc.call(self.context, 'dest_queue',
-                {'method': 'create_shared_storage_test_file'}
-                ).AndReturn(tmp_filename)
-        rpc.call(self.context, 'src_queue',
-                {'method': 'check_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}}).AndReturn(True)
-        rpc.cast(self.context, 'dest_queue',
-                {'method': 'cleanup_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}})
+        self._check_shared_storage(dest, instance, True)
+
         db.service_get_all_compute_by_host(self.context, dest).AndReturn(
                 [{'compute_node': [{'hypervisor_type': 'xen',
                                     'hypervisor_version': 1}]}])
@@ -886,20 +874,8 @@ class SchedulerTestCase(test.TestCase):
         self.driver._live_migration_dest_check(self.context, instance,
                 dest, block_migration, disk_over_commit)
 
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                dest).AndReturn('dest_queue')
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                instance['host']).AndReturn('src_queue')
-        tmp_filename = 'test-filename'
-        rpc.call(self.context, 'dest_queue',
-                {'method': 'create_shared_storage_test_file'}
-                ).AndReturn(tmp_filename)
-        rpc.call(self.context, 'src_queue',
-                {'method': 'check_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}}).AndReturn(True)
-        rpc.cast(self.context, 'dest_queue',
-                {'method': 'cleanup_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}})
+        self._check_shared_storage(dest, instance, True)
+
         db.service_get_all_compute_by_host(self.context, dest).AndReturn(
                 [{'compute_node': [{'hypervisor_type': 'xen',
                                     'hypervisor_version': 1}]}])
@@ -934,20 +910,8 @@ class SchedulerTestCase(test.TestCase):
         self.driver._live_migration_dest_check(self.context, instance,
                 dest, block_migration, disk_over_commit)
 
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                dest).AndReturn('dest_queue')
-        rpc.queue_get_for(self.context, FLAGS.compute_topic,
-                instance['host']).AndReturn('src_queue')
-        tmp_filename = 'test-filename'
-        rpc.call(self.context, 'dest_queue',
-                {'method': 'create_shared_storage_test_file'}
-                ).AndReturn(tmp_filename)
-        rpc.call(self.context, 'src_queue',
-                {'method': 'check_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}}).AndReturn(True)
-        rpc.cast(self.context, 'dest_queue',
-                {'method': 'cleanup_shared_storage_test_file',
-                 'args': {'filename': tmp_filename}})
+        self._check_shared_storage(dest, instance, True)
+
         db.service_get_all_compute_by_host(self.context, dest).AndReturn(
                 [{'compute_node': [{'hypervisor_type': 'xen',
                                     'hypervisor_version': 1}]}])
@@ -1020,12 +984,12 @@ class SchedulerDriverModuleTestCase(test.TestCase):
                        'extra_arg': 'meow'}
         queue = 'fake_queue'
 
-        self.mox.StubOutWithMock(utils, 'utcnow')
+        self.mox.StubOutWithMock(timeutils, 'utcnow')
         self.mox.StubOutWithMock(db, 'volume_update')
         self.mox.StubOutWithMock(rpc, 'queue_get_for')
         self.mox.StubOutWithMock(rpc, 'cast')
 
-        utils.utcnow().AndReturn('fake-now')
+        timeutils.utcnow().AndReturn('fake-now')
         db.volume_update(self.context, 31337,
                 {'host': host, 'scheduled_at': 'fake-now'})
         rpc.queue_get_for(self.context, 'volume', host).AndReturn(queue)
@@ -1080,12 +1044,12 @@ class SchedulerDriverModuleTestCase(test.TestCase):
                        'extra_arg': 'meow'}
         queue = 'fake_queue'
 
-        self.mox.StubOutWithMock(utils, 'utcnow')
+        self.mox.StubOutWithMock(timeutils, 'utcnow')
         self.mox.StubOutWithMock(db, 'instance_update')
         self.mox.StubOutWithMock(rpc, 'queue_get_for')
         self.mox.StubOutWithMock(rpc, 'cast')
 
-        utils.utcnow().AndReturn('fake-now')
+        timeutils.utcnow().AndReturn('fake-now')
         db.instance_update(self.context, 31337,
                 {'host': host, 'scheduled_at': 'fake-now'})
         rpc.queue_get_for(self.context, 'compute', host).AndReturn(queue)

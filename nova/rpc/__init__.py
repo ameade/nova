@@ -42,6 +42,10 @@ rpc_opts = [
     cfg.IntOpt('rpc_response_timeout',
                default=60,
                help='Seconds to wait for a response from call or multicall'),
+    cfg.IntOpt('rpc_cast_timeout',
+               default=30,
+               help='Seconds to wait before a cast expires (TTL). '
+                    'Only supported by impl_zmq.'),
     cfg.ListOpt('allowed_rpc_exception_modules',
                default=['nova.exception'],
                help='Modules of exceptions that are permitted to be recreated'
@@ -54,14 +58,7 @@ rpc_opts = [
                 help='If passed, use a fake RabbitMQ provider'),
     ]
 
-_CONF = None
-
-
-def register_opts(conf):
-    global _CONF
-    _CONF = conf
-    _CONF.register_opts(rpc_opts)
-    _get_impl().register_opts(_CONF)
+cfg.CONF.register_opts(rpc_opts)
 
 
 def create_connection(new=True):
@@ -77,7 +74,7 @@ def create_connection(new=True):
 
     :returns: An instance of nova.rpc.common.Connection
     """
-    return _get_impl().create_connection(_CONF, new=new)
+    return _get_impl().create_connection(cfg.CONF, new=new)
 
 
 def call(context, topic, msg, timeout=None):
@@ -99,7 +96,7 @@ def call(context, topic, msg, timeout=None):
     :raises: nova.rpc.common.Timeout if a complete response is not received
              before the timeout is reached.
     """
-    return _get_impl().call(_CONF, context, topic, msg, timeout)
+    return _get_impl().call(cfg.CONF, context, topic, msg, timeout)
 
 
 def cast(context, topic, msg):
@@ -116,7 +113,7 @@ def cast(context, topic, msg):
 
     :returns: None
     """
-    return _get_impl().cast(_CONF, context, topic, msg)
+    return _get_impl().cast(cfg.CONF, context, topic, msg)
 
 
 def fanout_cast(context, topic, msg):
@@ -136,7 +133,7 @@ def fanout_cast(context, topic, msg):
 
     :returns: None
     """
-    return _get_impl().fanout_cast(_CONF, context, topic, msg)
+    return _get_impl().fanout_cast(cfg.CONF, context, topic, msg)
 
 
 def multicall(context, topic, msg, timeout=None):
@@ -165,7 +162,7 @@ def multicall(context, topic, msg, timeout=None):
     :raises: nova.rpc.common.Timeout if a complete response is not received
              before the timeout is reached.
     """
-    return _get_impl().multicall(_CONF, context, topic, msg, timeout)
+    return _get_impl().multicall(cfg.CONF, context, topic, msg, timeout)
 
 
 def notify(context, topic, msg):
@@ -178,7 +175,7 @@ def notify(context, topic, msg):
 
     :returns: None
     """
-    return _get_impl().notify(_CONF, context, topic, msg)
+    return _get_impl().notify(cfg.CONF, context, topic, msg)
 
 
 def cleanup():
@@ -206,7 +203,7 @@ def cast_to_server(context, server_params, topic, msg):
 
     :returns: None
     """
-    return _get_impl().cast_to_server(_CONF, context, server_params, topic,
+    return _get_impl().cast_to_server(cfg.CONF, context, server_params, topic,
                                       msg)
 
 
@@ -222,12 +219,25 @@ def fanout_cast_to_server(context, server_params, topic, msg):
 
     :returns: None
     """
-    return _get_impl().fanout_cast_to_server(_CONF, context, server_params,
+    return _get_impl().fanout_cast_to_server(cfg.CONF, context, server_params,
                                              topic, msg)
 
 
 def queue_get_for(context, topic, host):
-    """Get a queue name for a given topic + host."""
+    """Get a queue name for a given topic + host.
+
+    This function only works if this naming convention is followed on the
+    consumer side, as well.  For example, in nova, every instance of the
+    nova-foo service calls create_consumer() for two topics:
+
+        foo
+        foo.<host>
+
+    Messages sent to the 'foo' topic are distributed to exactly one instance of
+    the nova-foo service.  The services are chosen in a round-robin fashion.
+    Messages sent to the 'foo.<host>' topic are sent to the nova-foo service on
+    <host>.
+    """
     return '%s.%s' % (topic, host)
 
 
@@ -238,5 +248,5 @@ def _get_impl():
     """Delay import of rpc_backend until configuration is loaded."""
     global _RPCIMPL
     if _RPCIMPL is None:
-        _RPCIMPL = importutils.import_module(_CONF.rpc_backend)
+        _RPCIMPL = importutils.import_module(cfg.CONF.rpc_backend)
     return _RPCIMPL

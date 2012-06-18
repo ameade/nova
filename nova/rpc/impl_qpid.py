@@ -17,7 +17,6 @@
 
 import functools
 import itertools
-import json
 import logging
 import time
 import uuid
@@ -28,6 +27,7 @@ import qpid.messaging
 import qpid.messaging.exceptions
 
 from nova.openstack.common import cfg
+from nova.openstack.common import jsonutils
 from nova.rpc import amqp as rpc_amqp
 from nova.rpc import common as rpc_common
 
@@ -78,6 +78,8 @@ qpid_opts = [
                 help='Disable Nagle algorithm'),
     ]
 
+cfg.CONF.register_opts(qpid_opts)
+
 
 class ConsumerBase(object):
     """Consumer base class."""
@@ -122,7 +124,7 @@ class ConsumerBase(object):
         addr_opts["node"]["x-declare"].update(node_opts)
         addr_opts["link"]["x-declare"].update(link_opts)
 
-        self.address = "%s ; %s" % (node_name, json.dumps(addr_opts))
+        self.address = "%s ; %s" % (node_name, jsonutils.dumps(addr_opts))
 
         self.reconnect(session)
 
@@ -135,7 +137,12 @@ class ConsumerBase(object):
     def consume(self):
         """Fetch the message and pass it to the callback object"""
         message = self.receiver.fetch()
-        self.callback(message.content)
+        try:
+            self.callback(message.content)
+        except Exception:
+            LOG.exception(_("Failed to process message... skipping it."))
+        finally:
+            self.session.acknowledge(message)
 
     def get_receiver(self):
         return self.receiver
@@ -220,7 +227,7 @@ class Publisher(object):
         if node_opts:
             addr_opts["node"]["x-declare"].update(node_opts)
 
-        self.address = "%s ; %s" % (node_name, json.dumps(addr_opts))
+        self.address = "%s ; %s" % (node_name, jsonutils.dumps(addr_opts))
 
         self.reconnect(session)
 
@@ -575,7 +582,3 @@ def notify(conf, context, topic, msg):
 
 def cleanup():
     return rpc_amqp.cleanup(Connection.pool)
-
-
-def register_opts(conf):
-    conf.register_opts(qpid_opts)

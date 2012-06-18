@@ -16,20 +16,20 @@
 #    under the License.
 
 import datetime
-import json
 
 from lxml import etree
 import webob
 
 from nova.api.openstack.compute.contrib import simple_tenant_usage
-from nova.common import policy as common_policy
 from nova.compute import api
 from nova import context
 from nova import flags
+from nova.openstack.common import jsonutils
+from nova.openstack.common import policy as common_policy
+from nova.openstack.common import timeutils
 from nova import policy
 from nova import test
 from nova.tests.api.openstack import fakes
-from nova import utils
 
 
 FLAGS = flags.FLAGS
@@ -41,7 +41,7 @@ ROOT_GB = 10
 EPHEMERAL_GB = 20
 MEMORY_MB = 1024
 VCPUS = 2
-STOP = utils.utcnow()
+STOP = timeutils.utcnow()
 START = STOP - datetime.timedelta(hours=HOURS)
 
 
@@ -103,7 +103,7 @@ class SimpleTenantUsageTest(test.TestCase):
                                fake_auth_context=self.admin_context))
 
         self.assertEqual(res.status_int, 200)
-        res_dict = json.loads(res.body)
+        res_dict = jsonutils.loads(res.body)
         usages = res_dict['tenant_usages']
         for i in xrange(TENANTS):
             self.assertEqual(int(usages[i]['total_hours']),
@@ -127,7 +127,7 @@ class SimpleTenantUsageTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(
                                fake_auth_context=self.admin_context))
         self.assertEqual(res.status_int, 200)
-        res_dict = json.loads(res.body)
+        res_dict = jsonutils.loads(res.body)
         return res_dict['tenant_usages']
 
     def test_verify_detailed_index(self):
@@ -159,7 +159,7 @@ class SimpleTenantUsageTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(
                                fake_auth_context=self.user_context))
         self.assertEqual(res.status_int, 200)
-        res_dict = json.loads(res.body)
+        res_dict = jsonutils.loads(res.body)
 
         usage = res_dict['tenant_usage']
         servers = usage['server_usages']
@@ -226,7 +226,7 @@ class SimpleTenantUsageSerializerTest(test.TestCase):
 
     def test_serializer_show(self):
         serializer = simple_tenant_usage.SimpleTenantUsageTemplate()
-        today = utils.utcnow()
+        today = timeutils.utcnow()
         yesterday = today - datetime.timedelta(days=1)
         raw_usage = dict(
             tenant_id='tenant',
@@ -272,7 +272,7 @@ class SimpleTenantUsageSerializerTest(test.TestCase):
 
     def test_serializer_index(self):
         serializer = simple_tenant_usage.SimpleTenantUsagesTemplate()
-        today = utils.utcnow()
+        today = timeutils.utcnow()
         yesterday = today - datetime.timedelta(days=1)
         raw_usages = [dict(
                 tenant_id='tenant1',

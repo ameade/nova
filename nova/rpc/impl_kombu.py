@@ -82,6 +82,8 @@ kombu_opts = [
 
     ]
 
+cfg.CONF.register_opts(kombu_opts)
+
 LOG = rpc_common.LOG
 
 
@@ -137,9 +139,10 @@ class ConsumerBase(object):
             message = self.channel.message_to_python(raw_message)
             try:
                 callback(message.payload)
-                message.ack()
             except Exception:
                 LOG.exception(_("Failed to process message... skipping it."))
+            finally:
+                message.ack()
 
         self.queue.consume(*args, callback=_callback, **options)
 
@@ -517,7 +520,7 @@ class Connection(object):
                 sleep_time = min(sleep_time, self.interval_max)
 
             log_info['sleep_time'] = sleep_time
-            LOG.exception(_('AMQP server on %(hostname)s:%(port)d is'
+            LOG.warn(_('AMQP server on %(hostname)s:%(port)d is'
                     ' unreachable: %(err_str)s. Trying again in '
                     '%(sleep_time)d seconds.') % log_info)
             time.sleep(sleep_time)
@@ -754,7 +757,3 @@ def notify(conf, context, topic, msg):
 
 def cleanup():
     return rpc_amqp.cleanup(Connection.pool)
-
-
-def register_opts(conf):
-    conf.register_opts(kombu_opts)

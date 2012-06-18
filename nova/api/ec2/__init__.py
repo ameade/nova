@@ -38,6 +38,7 @@ from nova import log as logging
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 from nova import utils
 from nova import wsgi
 
@@ -106,7 +107,7 @@ class RequestLogging(wsgi.Middleware):
 
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
-        start = utils.utcnow()
+        start = timeutils.utcnow()
         rv = req.get_response(self.application)
         self.log_request_completion(rv, req, start)
         return rv
@@ -120,7 +121,7 @@ class RequestLogging(wsgi.Middleware):
             controller = None
             action = None
         ctxt = request.environ.get('nova.context', None)
-        delta = utils.utcnow() - start
+        delta = timeutils.utcnow() - start
         seconds = delta.seconds
         microseconds = delta.microseconds
         LOG.info(
@@ -247,6 +248,8 @@ class EC2KeystoneAuth(wsgi.Middleware):
             token_id = result['access']['token']['id']
             user_id = result['access']['user']['id']
             project_id = result['access']['token']['tenant']['id']
+            user_name = result['access']['user'].get('name')
+            project_name = result['access']['token']['tenant'].get('name')
             roles = [role['name'] for role
                      in result['access']['user']['roles']]
         except (AttributeError, KeyError), e:
@@ -260,6 +263,8 @@ class EC2KeystoneAuth(wsgi.Middleware):
                                              remote_address)
         ctxt = context.RequestContext(user_id,
                                       project_id,
+                                      user_name=user_name,
+                                      project_name=project_name,
                                       roles=roles,
                                       auth_token=token_id,
                                       remote_address=remote_address)

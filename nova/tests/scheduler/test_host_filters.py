@@ -16,12 +16,12 @@ Tests For Scheduler Host Filters.
 """
 
 import httplib
-import json
 import stubout
 
 from nova import context
 from nova import exception
 from nova import flags
+from nova.openstack.common import jsonutils
 from nova.scheduler import filters
 from nova.scheduler.filters.trusted_filter import AttestationService
 from nova import test
@@ -71,7 +71,7 @@ class HostFiltersTestCase(test.TestCase):
         self.stubs = stubout.StubOutForTesting()
         stub_out_https_backend(self.stubs)
         self.context = context.RequestContext('fake', 'fake')
-        self.json_query = json.dumps(
+        self.json_query = jsonutils.dumps(
                 ['and', ['>=', '$free_ram_mb', 1024],
                         ['>=', '$free_disk_mb', 200 * 1024]])
         # This has a side effect of testing 'get_filter_classes'
@@ -137,6 +137,18 @@ class HostFiltersTestCase(test.TestCase):
 
         self.assertFalse(filt_cls.host_passes(host, filter_properties))
 
+    def test_affinity_different_filter_handles_none(self):
+        filt_cls = self.class_map['DifferentHostFilter']()
+        host = fakes.FakeHostState('host1', 'compute', {})
+        instance = fakes.FakeInstance(context=self.context,
+                                         params={'host': 'host2'})
+        instance_uuid = instance.uuid
+
+        filter_properties = {'context': self.context.elevated(),
+                             'scheduler_hints': None}
+
+        self.assertTrue(filt_cls.host_passes(host, filter_properties))
+
     def test_affinity_same_filter_passes(self):
         filt_cls = self.class_map['SameHostFilter']()
         host = fakes.FakeHostState('host1', 'compute', {})
@@ -163,13 +175,24 @@ class HostFiltersTestCase(test.TestCase):
 
         self.assertFalse(filt_cls.host_passes(host, filter_properties))
 
+    def test_affinity_same_filter_handles_none(self):
+        filt_cls = self.class_map['SameHostFilter']()
+        host = fakes.FakeHostState('host1', 'compute', {})
+        instance = fakes.FakeInstance(context=self.context,
+                                         params={'host': 'host2'})
+        instance_uuid = instance.uuid
+
+        filter_properties = {'context': self.context.elevated(),
+                             'scheduler_hints': None}
+
+        self.assertTrue(filt_cls.host_passes(host, filter_properties))
+
     def test_affinity_simple_cidr_filter_passes(self):
         filt_cls = self.class_map['SimpleCIDRAffinityFilter']()
         host = fakes.FakeHostState('host1', 'compute', {})
+        host.capabilities = {'host_ip': '10.8.1.1'}
 
-        affinity_ip = flags.FLAGS.my_ip.split('.')[0:3]
-        affinity_ip.append('100')
-        affinity_ip = str.join('.', affinity_ip)
+        affinity_ip = "10.8.1.100"
 
         filter_properties = {'context': self.context.elevated(),
                              'scheduler_hints': {
@@ -181,10 +204,9 @@ class HostFiltersTestCase(test.TestCase):
     def test_affinity_simple_cidr_filter_fails(self):
         filt_cls = self.class_map['SimpleCIDRAffinityFilter']()
         host = fakes.FakeHostState('host1', 'compute', {})
+        host.capabilities = {'host_ip': '10.8.1.1'}
 
-        affinity_ip = flags.FLAGS.my_ip.split('.')
-        affinity_ip[-1] = '100' if affinity_ip[-1] != '100' else '101'
-        affinity_ip = str.join('.', affinity_ip)
+        affinity_ip = "10.8.1.100"
 
         filter_properties = {'context': self.context.elevated(),
                              'scheduler_hints': {
@@ -192,6 +214,19 @@ class HostFiltersTestCase(test.TestCase):
                                  'build_near_host_ip': affinity_ip}}
 
         self.assertFalse(filt_cls.host_passes(host, filter_properties))
+
+    def test_affinity_simple_cidr_filter_handles_none(self):
+        filt_cls = self.class_map['SimpleCIDRAffinityFilter']()
+        host = fakes.FakeHostState('host1', 'compute', {})
+
+        affinity_ip = flags.FLAGS.my_ip.split('.')[0:3]
+        affinity_ip.append('100')
+        affinity_ip = str.join('.', affinity_ip)
+
+        filter_properties = {'context': self.context.elevated(),
+                             'scheduler_hints': None}
+
+        self.assertTrue(filt_cls.host_passes(host, filter_properties))
 
     def test_compute_filter_passes(self):
         self._stub_service_is_up(True)
@@ -411,7 +446,7 @@ class HostFiltersTestCase(test.TestCase):
 
     def test_json_filter_fails_on_caps_disabled(self):
         filt_cls = self.class_map['JsonFilter']()
-        json_query = json.dumps(
+        json_query = jsonutils.dumps(
                 ['and', ['>=', '$free_ram_mb', 1024],
                         ['>=', '$free_disk_mb', 200 * 1024],
                         '$capabilities.enabled'])
@@ -428,7 +463,7 @@ class HostFiltersTestCase(test.TestCase):
 
     def test_json_filter_fails_on_service_disabled(self):
         filt_cls = self.class_map['JsonFilter']()
-        json_query = json.dumps(
+        json_query = jsonutils.dumps(
                 ['and', ['>=', '$free_ram_mb', 1024],
                         ['>=', '$free_disk_mb', 200 * 1024],
                         ['not', '$service.disabled']])
@@ -456,7 +491,11 @@ class HostFiltersTestCase(test.TestCase):
                       ['and',
                           ['>', '$free_ram_mb', 30],
                           ['>', '$free_disk_mb', 300]]]]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
 
         # Passes
         capabilities = {'enabled': True, 'opt1': 'match'}
@@ -553,26 +592,42 @@ class HostFiltersTestCase(test.TestCase):
 
         for (op, args, expected) in ops_to_test:
             raw = [op] + args
-            filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+            filter_properties = {
+                'scheduler_hints': {
+                    'query': jsonutils.dumps(raw),
+                },
+            }
             self.assertEqual(expected,
                     filt_cls.host_passes(host, filter_properties))
 
         # This results in [False, True, False, True] and if any are True
         # then it passes...
         raw = ['not', True, False, True, False]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
 
         # This results in [False, False, False] and if any are True
         # then it passes...which this doesn't
         raw = ['not', True, True, True]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertFalse(filt_cls.host_passes(host, filter_properties))
 
     def test_json_filter_unknown_operator_raises(self):
         filt_cls = self.class_map['JsonFilter']()
         raw = ['!=', 1, 2]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         host = fakes.FakeHostState('host1', 'compute',
                 {'capabilities': {'enabled': True}})
         self.assertRaises(KeyError,
@@ -584,10 +639,18 @@ class HostFiltersTestCase(test.TestCase):
                 {'capabilities': {'enabled': True}})
 
         raw = []
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
         raw = {}
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
 
     def test_json_filter_invalid_num_arguments_fails(self):
@@ -596,11 +659,19 @@ class HostFiltersTestCase(test.TestCase):
                 {'capabilities': {'enabled': True}})
 
         raw = ['>', ['and', ['or', ['not', ['<', ['>=', ['<=', ['in', ]]]]]]]]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertFalse(filt_cls.host_passes(host, filter_properties))
 
         raw = ['>', 1]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertFalse(filt_cls.host_passes(host, filter_properties))
 
     def test_json_filter_unknown_variable_ignored(self):
@@ -609,11 +680,19 @@ class HostFiltersTestCase(test.TestCase):
                 {'capabilities': {'enabled': True}})
 
         raw = ['=', '$........', 1, 1]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
 
         raw = ['=', '$foo', 2, 2]
-        filter_properties = {'scheduler_hints': {'query': json.dumps(raw)}}
+        filter_properties = {
+            'scheduler_hints': {
+                'query': jsonutils.dumps(raw),
+            },
+        }
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
 
     def test_trusted_filter_default_passes(self):
@@ -714,3 +793,57 @@ class HostFiltersTestCase(test.TestCase):
         request = self._make_zone_request('bad')
         host = fakes.FakeHostState('host1', 'compute', {'service': service})
         self.assertFalse(filt_cls.host_passes(host, request))
+
+    def test_arch_filter_same(self):
+        permitted_instances = ['x86_64']
+        filt_cls = self.class_map['ArchFilter']()
+        filter_properties = {
+            'request_spec': {
+                'instance_properties': {'architecture': 'x86_64'}
+            }
+        }
+        capabilities = {'enabled': True,
+                            'cpu_info': {
+                                'permitted_instance_types': permitted_instances
+                            }
+                        }
+        service = {'disabled': False}
+        host = fakes.FakeHostState('host1', 'compute',
+            {'capabilities': capabilities, 'service': service})
+        self.assertTrue(filt_cls.host_passes(host, filter_properties))
+
+    def test_arch_filter_different(self):
+        permitted_instances = ['arm']
+        filt_cls = self.class_map['ArchFilter']()
+        filter_properties = {
+            'request_spec': {
+                    'instance_properties': {'architecture': 'x86_64'}
+                }
+            }
+        capabilities = {'enabled': True,
+                            'cpu_info': {
+                                'permitted_instance_types': permitted_instances
+                            }
+                        }
+        service = {'disabled': False}
+        host = fakes.FakeHostState('host1', 'compute',
+            {'capabilities': capabilities, 'service': service})
+        self.assertFalse(filt_cls.host_passes(host, filter_properties))
+
+    def test_arch_filter_without_permitted_instances(self):
+        permitted_instances = []
+        filt_cls = self.class_map['ArchFilter']()
+        filter_properties = {
+             'request_spec': {
+                'instance_properties': {'architecture': 'x86_64'}
+            }
+        }
+        capabilities = {'enabled': True,
+                            'cpu_info': {
+                                'permitted_instance_types': permitted_instances
+                            }
+                        }
+        service = {'disabled': False}
+        host = fakes.FakeHostState('host1', 'compute',
+            {'capabilities': capabilities, 'service': service})
+        self.assertFalse(filt_cls.host_passes(host, filter_properties))

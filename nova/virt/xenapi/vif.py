@@ -46,15 +46,15 @@ class XenAPIBridgeDriver(XenVIFDriver):
 
     def plug(self, instance, vif, vm_ref=None, device=None):
         if not vm_ref:
-            vm_ref = vm_utils.VMHelper.lookup(self._session, instance.name)
+            vm_ref = vm_utils.lookup(self._session, instance.name)
         if not device:
             device = 0
 
         if vif['network'].get_meta('should_create_vlan'):
             network_ref = self._ensure_vlan_bridge(vif['network'])
         else:
-            network_ref = network_utils.NetworkHelper.find_network_with_bridge(
-                                       self._session, vif['network']['bridge'])
+            network_ref = network_utils.find_network_with_bridge(
+                    self._session, vif['network']['bridge'])
         vif_rec = {}
         vif_rec['device'] = str(device)
         vif_rec['network'] = network_ref
@@ -80,7 +80,7 @@ class XenAPIBridgeDriver(XenVIFDriver):
                             network.get_meta('bridge_interface'))
         # Check whether bridge already exists
         # Retrieve network whose name_label is "bridge"
-        network_ref = network_utils.NetworkHelper.find_network_with_name_label(
+        network_ref = network_utils.find_network_with_name_label(
                                         self._session, bridge)
         if network_ref is None:
             # If bridge does not exists
@@ -136,15 +136,15 @@ class XenAPIOpenVswitchDriver(XenVIFDriver):
 
     def plug(self, instance, vif, vm_ref=None, device=None):
         if not vm_ref:
-            vm_ref = vm_utils.VMHelper.lookup(self._session, instance.name)
+            vm_ref = vm_utils.lookup(self._session, instance.name)
 
         if not device:
             device = 0
 
         # with OVS model, always plug into an OVS integration bridge
         # that is already created
-        network_ref = network_utils.NetworkHelper.find_network_with_bridge(
-            self._session, FLAGS.xenapi_ovs_integration_bridge)
+        network_ref = network_utils.find_network_with_bridge(
+                self._session, FLAGS.xenapi_ovs_integration_bridge)
         vif_rec = {}
         vif_rec['device'] = str(device)
         vif_rec['network'] = network_ref

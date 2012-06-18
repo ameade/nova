@@ -13,8 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-
 from lxml import etree
 import webob
 
@@ -23,9 +21,10 @@ from nova import context
 from nova import exception
 from nova import flags
 from nova import log as logging
+from nova.openstack.common import jsonutils
+from nova.openstack.common import timeutils
 from nova import test
 from nova.tests.api.openstack import fakes
-from nova import utils
 from nova import volume
 
 FLAGS = flags.FLAGS
@@ -117,7 +116,7 @@ class SnapshotApiTest(test.TestCase):
         body = dict(snapshot=snapshot)
         req = webob.Request.blank('/v2/fake/os-snapshots')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = 'application/json'
 
         resp = req.get_response(fakes.wsgi_app())
@@ -129,7 +128,7 @@ class SnapshotApiTest(test.TestCase):
         self.assertEqual(_last_param['display_description'],
             "Snapshot Test Desc")
 
-        resp_dict = json.loads(resp.body)
+        resp_dict = jsonutils.loads(resp.body)
         LOG.debug(_("test_snapshot_create: resp_dict=%s"), resp_dict)
         self.assertTrue('snapshot' in resp_dict)
         self.assertEqual(resp_dict['snapshot']['displayName'],
@@ -148,7 +147,7 @@ class SnapshotApiTest(test.TestCase):
         body = dict(snapshot=snapshot)
         req = webob.Request.blank('/v2/fake/os-snapshots')
         req.method = 'POST'
-        req.body = json.dumps(body)
+        req.body = jsonutils.dumps(body)
         req.headers['content-type'] = 'application/json'
 
         resp = req.get_response(fakes.wsgi_app())
@@ -160,7 +159,7 @@ class SnapshotApiTest(test.TestCase):
         self.assertEqual(_last_param['display_description'],
             "Snapshot Test Desc")
 
-        resp_dict = json.loads(resp.body)
+        resp_dict = jsonutils.loads(resp.body)
         LOG.debug(_("test_snapshot_create_force: resp_dict=%s"), resp_dict)
         self.assertTrue('snapshot' in resp_dict)
         self.assertEqual(resp_dict['snapshot']['displayName'],
@@ -205,7 +204,7 @@ class SnapshotApiTest(test.TestCase):
         self.assertEqual(resp.status_int, 200)
         self.assertEqual(str(_last_param['snapshot_id']), str(snapshot_id))
 
-        resp_dict = json.loads(resp.body)
+        resp_dict = jsonutils.loads(resp.body)
         self.assertTrue('snapshot' in resp_dict)
         self.assertEqual(resp_dict['snapshot']['id'], str(snapshot_id))
 
@@ -226,7 +225,7 @@ class SnapshotApiTest(test.TestCase):
         resp = req.get_response(fakes.wsgi_app())
         self.assertEqual(resp.status_int, 200)
 
-        resp_dict = json.loads(resp.body)
+        resp_dict = jsonutils.loads(resp.body)
         LOG.debug(_("test_snapshot_detail: resp_dict=%s"), resp_dict)
         self.assertTrue('snapshots' in resp_dict)
         resp_snapshots = resp_dict['snapshots']
@@ -250,7 +249,7 @@ class SnapshotSerializerTest(test.TestCase):
             id='snap_id',
             status='snap_status',
             size=1024,
-            createdAt=utils.utcnow(),
+            createdAt=timeutils.utcnow(),
             displayName='snap_name',
             displayDescription='snap_desc',
             volumeId='vol_id',
@@ -268,7 +267,7 @@ class SnapshotSerializerTest(test.TestCase):
                 id='snap1_id',
                 status='snap1_status',
                 size=1024,
-                createdAt=utils.utcnow(),
+                createdAt=timeutils.utcnow(),
                 displayName='snap1_name',
                 displayDescription='snap1_desc',
                 volumeId='vol1_id',
@@ -277,7 +276,7 @@ class SnapshotSerializerTest(test.TestCase):
                 id='snap2_id',
                 status='snap2_status',
                 size=1024,
-                createdAt=utils.utcnow(),
+                createdAt=timeutils.utcnow(),
                 displayName='snap2_name',
                 displayDescription='snap2_desc',
                 volumeId='vol2_id',

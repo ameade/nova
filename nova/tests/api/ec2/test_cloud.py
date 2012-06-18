@@ -90,7 +90,7 @@ def get_instances_with_cached_ips(orig_func, *args, **kwargs):
 class CloudTestCase(test.TestCase):
     def setUp(self):
         super(CloudTestCase, self).setUp()
-        self.flags(connection_type='fake',
+        self.flags(compute_driver='nova.virt.fake.FakeDriver',
                    stub_network=True)
 
         def dumb(*args, **kwargs):
@@ -244,7 +244,7 @@ class CloudTestCase(test.TestCase):
                                   public_ip=address)
         self.network.deallocate_fixed_ip(self.context, fixed_ips[0]['address'],
                                          inst['host'])
-        db.instance_destroy(self.context, inst['id'])
+        db.instance_destroy(self.context, inst['uuid'])
         db.floating_ip_destroy(self.context, address)
 
     def test_describe_security_groups(self):
@@ -295,7 +295,7 @@ class CloudTestCase(test.TestCase):
 
     def test_security_group_quota_limit(self):
         self.flags(quota_security_groups=10)
-        for i in range(1, 10):
+        for i in range(1, FLAGS.quota_security_groups + 1):
             name = 'test name %i' % i
             descript = 'test description %i' % i
             create = self.cloud.create_security_group
@@ -584,7 +584,7 @@ class CloudTestCase(test.TestCase):
                           self.cloud.delete_security_group,
                           self.context, 'testgrp')
 
-        db.instance_destroy(self.context, inst.id)
+        db.instance_destroy(self.context, inst['uuid'])
 
         self.cloud.delete_security_group(self.context, 'testgrp')
 
@@ -759,8 +759,8 @@ class CloudTestCase(test.TestCase):
         self.assertEqual(instance['privateIpAddress'], '192.168.0.3')
         self.assertEqual(instance['dnsNameV6'],
                 'fe80:b33f::a8bb:ccff:fedd:eeff')
-        db.instance_destroy(self.context, inst1['id'])
-        db.instance_destroy(self.context, inst2['id'])
+        db.instance_destroy(self.context, inst1['uuid'])
+        db.instance_destroy(self.context, inst2['uuid'])
         db.service_destroy(self.context, comp1['id'])
         db.service_destroy(self.context, comp2['id'])
 
@@ -814,9 +814,9 @@ class CloudTestCase(test.TestCase):
         self.assertEqual(result[1]['launchTime'], inst3_kwargs['created_at'])
         self.assertEqual(result[2]['launchTime'], inst1_kwargs['created_at'])
 
-        db.instance_destroy(self.context, inst1['id'])
-        db.instance_destroy(self.context, inst2['id'])
-        db.instance_destroy(self.context, inst3['id'])
+        db.instance_destroy(self.context, inst1['uuid'])
+        db.instance_destroy(self.context, inst2['uuid'])
+        db.instance_destroy(self.context, inst3['uuid'])
         db.service_destroy(self.context, comp1['id'])
         db.service_destroy(self.context, comp2['id'])
 
@@ -842,7 +842,7 @@ class CloudTestCase(test.TestCase):
             self.assertEqual(code, expected_code)
             self.assertEqual(name, expected_name)
 
-            db.instance_destroy(self.context, inst['id'])
+            db.instance_destroy(self.context, inst['uuid'])
 
         test_instance_state(inst_state.RUNNING_CODE, inst_state.RUNNING,
                             power_state.RUNNING, vm_states.ACTIVE)
@@ -879,7 +879,7 @@ class CloudTestCase(test.TestCase):
         self.assertEqual(instance['privateDnsName'], 'server-1234')
         self.assertEqual(instance['privateIpAddress'], '192.168.0.3')
         self.assertNotIn('dnsNameV6', instance)
-        db.instance_destroy(self.context, inst1['id'])
+        db.instance_destroy(self.context, inst1['uuid'])
         db.service_destroy(self.context, comp1['id'])
 
     def test_describe_instances_deleted(self):
@@ -896,7 +896,7 @@ class CloudTestCase(test.TestCase):
                  'host': 'host1',
                  'vm_state': 'active'}
         inst2 = db.instance_create(self.context, args2)
-        db.instance_destroy(self.context, inst1.id)
+        db.instance_destroy(self.context, inst1['uuid'])
         result = self.cloud.describe_instances(self.context)
         self.assertEqual(len(result['reservationSet']), 1)
         result1 = result['reservationSet'][0]['instancesSet']
@@ -1000,8 +1000,8 @@ class CloudTestCase(test.TestCase):
             for bdm in db.block_device_mapping_get_all_by_instance(
                 self.context, uuid):
                 db.block_device_mapping_destroy(self.context, bdm['id'])
-        db.instance_destroy(self.context, inst2['id'])
-        db.instance_destroy(self.context, inst1['id'])
+        db.instance_destroy(self.context, inst2['uuid'])
+        db.instance_destroy(self.context, inst1['uuid'])
 
     # NOTE(jdg) Modified expected volume_id's to string
     _expected_instance_bdm1 = {
@@ -1525,6 +1525,11 @@ class CloudTestCase(test.TestCase):
         self.assertTrue(filter(lambda k: k['keyName'] == 'test1', keys))
         self.assertTrue(filter(lambda k: k['keyName'] == 'test2', keys))
 
+    def test_describe_bad_key_pairs(self):
+        self.assertRaises(exception.EC2APIError,
+            self.cloud.describe_key_pairs, self.context,
+            key_name=['DoesNotExist'])
+
     def test_import_key_pair(self):
         pubkey_path = os.path.join(os.path.dirname(__file__), 'public_key')
         f = open(pubkey_path + '/dummy.pub', 'r')
@@ -1839,8 +1844,8 @@ class CloudTestCase(test.TestCase):
                   'max_count': 1, }
         instance_id = self._run_instance(**kwargs)
 
-        internal_id = ec2utils.ec2_id_to_id(instance_id)
-        instance = db.instance_update(self.context, internal_id,
+        internal_uuid = ec2utils.ec2_id_to_uuid(self.context, instance_id)
+        instance = db.instance_update(self.context, internal_uuid,
                                       {'disable_terminate': True})
 
         expected = {'instancesSet': [
@@ -1852,7 +1857,7 @@ class CloudTestCase(test.TestCase):
         result = self.cloud.terminate_instances(self.context, [instance_id])
         self.assertEqual(result, expected)
 
-        instance = db.instance_update(self.context, internal_id,
+        instance = db.instance_update(self.context, internal_uuid,
                                       {'disable_terminate': False})
 
         expected = {'instancesSet': [
@@ -1963,9 +1968,10 @@ class CloudTestCase(test.TestCase):
         self.assertTrue(result)
 
         vol = db.volume_get(self.context, vol1['id'])
-        self._assert_volume_detached(vol)
+        self._assert_volume_attached(vol, instance_uuid, '/dev/vdb')
+
         vol = db.volume_get(self.context, vol2['id'])
-        self._assert_volume_detached(vol)
+        self._assert_volume_attached(vol, instance_uuid, '/dev/vdc')
 
         self.cloud.start_instances(self.context, [ec2_instance_id])
         vols = db.volume_get_all_by_instance_uuid(self.context, instance_uuid)
@@ -2034,9 +2040,8 @@ class CloudTestCase(test.TestCase):
         result = self.cloud.stop_instances(self.context, [ec2_instance_id])
         self.assertTrue(result)
 
-        for vol_id in (vol1['id'], vol2['id']):
-            vol = db.volume_get(self.context, vol_id)
-            self._assert_volume_detached(vol)
+        vol = db.volume_get(self.context, vol2['id'])
+        self._assert_volume_attached(vol, instance_uuid, '/dev/vdc')
 
         self.cloud.start_instances(self.context, [ec2_instance_id])
         vols = db.volume_get_all_by_instance_uuid(self.context, instance_uuid)

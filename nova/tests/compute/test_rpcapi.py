@@ -44,7 +44,12 @@ class ComputeRpcAPITestCase(test.TestCase):
 
     def _test_compute_api(self, method, rpc_method, **kwargs):
         ctxt = context.RequestContext('fake_user', 'fake_project')
-        rpcapi = compute_rpcapi.ComputeAPI()
+        if 'rpcapi_class' in kwargs:
+            rpcapi_class = kwargs['rpcapi_class']
+            del kwargs['rpcapi_class']
+        else:
+            rpcapi_class = compute_rpcapi.ComputeAPI
+        rpcapi = rpcapi_class()
         expected_retval = 'foo' if method == 'call' else None
 
         expected_msg = rpcapi.make_msg(method, **kwargs)
@@ -58,12 +63,13 @@ class ComputeRpcAPITestCase(test.TestCase):
             instance = expected_msg['args']['instance']
             del expected_msg['args']['instance']
             if method in ['rollback_live_migration_at_destination',
-                          'pre_live_migration',
+                          'pre_live_migration', 'remove_volume_connection',
                           'post_live_migration_at_destination']:
                 expected_msg['args']['instance_id'] = instance['id']
+            elif method == 'get_instance_disk_info':
+                expected_msg['args']['instance_name'] = instance['name']
             else:
                 expected_msg['args']['instance_uuid'] = instance['uuid']
-
         expected_msg['version'] = rpcapi.RPC_API_VERSION
 
         cast_and_call = ['confirm_resize', 'stop_instance']
@@ -105,6 +111,14 @@ class ComputeRpcAPITestCase(test.TestCase):
         self._test_compute_api('attach_volume', 'cast',
                 instance=self.fake_instance, volume_id='id', mountpoint='mp')
 
+    def test_check_shared_storage_test_file(self):
+        self._test_compute_api('check_shared_storage_test_file', 'call',
+                filename='fn', host='host')
+
+    def test_cleanup_shared_storage_test_file(self):
+        self._test_compute_api('cleanup_shared_storage_test_file', 'cast',
+                filename='fn', host='host')
+
     def test_compare_cpu(self):
         self._test_compute_api('compare_cpu', 'call', cpu_info='info',
                 host='host')
@@ -116,6 +130,10 @@ class ComputeRpcAPITestCase(test.TestCase):
     def test_confirm_resize_call(self):
         self._test_compute_api('confirm_resize', 'call',
                 instance=self.fake_instance, migration_id='id', host='host')
+
+    def test_create_shared_storage_test_file(self):
+        self._test_compute_api('create_shared_storage_test_file', 'call',
+                host='host')
 
     def test_detach_volume(self):
         self._test_compute_api('detach_volume', 'cast',
@@ -143,6 +161,10 @@ class ComputeRpcAPITestCase(test.TestCase):
 
     def test_get_diagnostics(self):
         self._test_compute_api('get_diagnostics', 'call',
+                instance=self.fake_instance)
+
+    def test_get_instance_disk_info(self):
+        self._test_compute_api('get_instance_disk_info', 'call',
                 instance=self.fake_instance)
 
     def test_get_vnc_console(self):
@@ -207,10 +229,12 @@ class ComputeRpcAPITestCase(test.TestCase):
 
     def test_refresh_security_group_rules(self):
         self._test_compute_api('refresh_security_group_rules', 'cast',
+                rpcapi_class=compute_rpcapi.SecurityGroupAPI,
                 security_group_id='id', host='host')
 
     def test_refresh_security_group_members(self):
         self._test_compute_api('refresh_security_group_members', 'cast',
+                rpcapi_class=compute_rpcapi.SecurityGroupAPI,
                 security_group_id='id', host='host')
 
     def test_remove_aggregate_host(self):
@@ -220,6 +244,10 @@ class ComputeRpcAPITestCase(test.TestCase):
     def test_remove_fixed_ip_from_instance(self):
         self._test_compute_api('remove_fixed_ip_from_instance', 'cast',
                 instance=self.fake_instance, address='addr')
+
+    def test_remove_volume_connection(self):
+        self._test_compute_api('remove_volume_connection', 'call',
+                instance=self.fake_instance, volume_id='id', host='host')
 
     def test_rescue_instance(self):
         self._test_compute_api('rescue_instance', 'cast',

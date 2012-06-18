@@ -175,6 +175,10 @@ class DBError(NovaException):
         super(DBError, self).__init__(str(inner_exception))
 
 
+class DeprecatedConfig(NovaException):
+    message = _("Fatal call to deprecated config %(msg)")
+
+
 class DecryptionFailure(NovaException):
     message = _("Failed to decrypt text")
 
@@ -419,9 +423,18 @@ class InvalidUUID(Invalid):
     message = _("Expected a uuid but received %(uuid).")
 
 
+class ConstraintNotMet(NovaException):
+    message = _("Constraint not met.")
+    code = 412
+
+
 class NotFound(NovaException):
     message = _("Resource could not be found.")
     code = 404
+
+
+class VirtDriverNotFound(NotFound):
+    message = _("Could not find driver for connection_type %(name)s")
 
 
 class VolumeNotFound(NotFound):
@@ -769,11 +782,11 @@ class ConsoleNotFound(NotFound):
 
 
 class ConsoleNotFoundForInstance(ConsoleNotFound):
-    message = _("Console for instance %(instance_id)s could not be found.")
+    message = _("Console for instance %(instance_uuid)s could not be found.")
 
 
 class ConsoleNotFoundInPoolForInstance(ConsoleNotFound):
-    message = _("Console for instance %(instance_id)s "
+    message = _("Console for instance %(instance_uuid)s "
                 "in pool %(pool_id)s could not be found.")
 
 
@@ -798,10 +811,6 @@ class FlavorNotFound(NotFound):
     message = _("Flavor %(flavor_id)s could not be found.")
 
 
-class CellNotFound(NotFound):
-    message = _("Cell %(cell_id)s could not be found.")
-
-
 class SchedulerHostFilterNotFound(NotFound):
     message = _("Scheduler Host Filter %(filter_name)s could not be found.")
 
@@ -816,7 +825,7 @@ class SchedulerWeightFlagNotFound(NotFound):
 
 
 class InstanceMetadataNotFound(NotFound):
-    message = _("Instance %(instance_id)s has no metadata with "
+    message = _("Instance %(instance_uuid)s has no metadata with "
                 "key %(metadata_key)s.")
 
 
@@ -988,8 +997,8 @@ class QuotaError(NovaException):
 
 
 class TooManyInstances(QuotaError):
-    message = _("Quota exceeded: already used %(used)d of %(allowed)d"
-                " instances")
+    message = _("Quota exceeded for %(overs)s: Requested %(req)s,"
+                " but already used %(used)d of %(allowed)d instances")
 
 
 class VolumeSizeTooLarge(QuotaError):
@@ -1088,7 +1097,7 @@ class InvalidInstanceIDMalformed(Invalid):
 
 
 class CouldNotFetchImage(NovaException):
-    message = _("Could not fetch image %(image)s")
+    message = _("Could not fetch image %(image_id)s")
 
 
 def get_context_from_function_and_args(function, args, kwargs):
