@@ -1,0 +1,190 @@
+#!/usr/bin/python26 -u
+
+# Copyright (c) 2012 OpenStack, LLC
+# Copyright (c) 2010 Citrix Systems, Inc.
+# Copyright 2010 United States Government as represented by the
+# Administrator of the National Aeronautics and Space Administration.
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+"""Handle the uploading of images via Swift."""
+
+import hashlib
+import httplib
+import os
+
+import utils
+
+#FIXME(sirp): should this use pluginlib from 5.6?
+from pluginlib_nova import *
+import swift_client
+
+
+configure_logging('swift')
+
+
+class ChunkReader(object):
+    def __init__(self, file_obj, checksum):
+        self.file_obj = file_obj
+        self.checksum = checksum
+
+    def read(self, num_bytes):
+        result = self.file_obj.read(num_bytes)
+        self.checksum.update(result)
+
+def hashfile(afile, hasher, blocksize=65536):
+    buf = afile.read(blocksize)
+    while len(buf) > 0:
+        hasher.update(buf)
+        buf = afile.read(blocksize)
+    return hasher.hexdigest()
+
+
+def create_container_if_missing(container, swift_conn, create_container_on_put):
+    """
+    Creates a missing container in Swift if the
+    ``swift_store_create_container_on_put`` option is set.
+
+    :param container: Name of container to create
+    :param swift_conn: Connection to Swift
+    """
+    try:
+        swift_conn.head_container(container)
+    except swift_client.ClientException, e:
+        if e.http_status == httplib.NOT_FOUND:
+            if create_container_on_put:
+                try:
+                    swift_conn.put_container(container)
+                except swift_client.ClientException, e:
+                    msg = ("Failed to add container to Swift.\n"
+                            "Got error from Swift: %(e)s" % locals())
+                    logging.error(msg)
+                    raise Exception(msg)
+            else:
+                msg = ("The container %(container)s does not exist in "
+                         "Swift. Please set the "
+                         "swift_store_create_container_on_put option"
+                         "to add container to Swift automatically." %
+                       locals())
+                logging.error(msg)
+                raise Exception(msg)
+        else:
+            msg("ERROR")
+            raise Exception(msg)
+
+
+def make_swift_connection(enable_snet, auth_version, auth_url, user, key,
+                          storage_url=None):
+    """
+    Creates a connection using the Swift client library.
+
+    :param auth_url The authentication for v1 style Swift auth or
+                    v2 style Keystone auth.
+    :param user A string containing the tenant:user information.
+    :param key  A string containing the key/password for the connection.
+    :param region   A string containing the swift endpoint region
+    :param storage_url A string containing the storage URL.
+    """
+    snet = enable_snet
+    auth_version = auth_version
+    full_auth_url = (auth_url if not auth_url or auth_url.endswith('/')
+                     else auth_url + '/')
+    logging.info("Creating Swift connection with "
+                   "(auth_address=%(full_auth_url)s, user=%(user)s, "
+                   "snet=%(snet)s, auth_version=%(auth_version)s)" %
+                 locals())
+    tenant_name = None
+    if auth_version == '2':
+        tenant_user = user.split(':')
+        if len(tenant_user) != 2:
+            reason = ("Badly formed tenant:user '%(tenant_user)s' in "
+                        "Swift URI" % locals())
+            logging.error(reason)
+            raise Exception(reason)
+        (tenant_name, user) = tenant_user
+    return swift_client.Connection(
+        full_auth_url, user, key, snet=snet, auth_version=auth_version)
+
+
+def _upload_tarball(staging_path, image_id, **params):
+    """
+    Create a tarball of the image and then stream that into swift
+    using swift_client's chunked-transfer-encoded HTTP.
+    """
+    enable_snet = params['swift_enable_snet']
+    user = params['swift_store_user']
+    key = params['swift_store_key']
+    auth_version = params['swift_store_auth_version']
+    container =  params['swift_store_container']
+    large_object_chunk_size = params['swift_store_large_object_chunk_size']
+    create_container_on_put = params['swift_store_create_container_on_put']
+    full_auth_address = params['full_auth_address']
+    obj_name = str(image_id)
+
+    #TODO(isethi): Currently we create a path for swift file object and store
+    #              the tarred fileobject in it.This object is chunked and sent
+    #              to swift. This results in extra disk io. A method to send
+    #              data as it is tarred needs to be implemented. The catch is
+    #              that the chunk size of the tarred image is different from
+    #              swift chunk size.
+    swift_fileobj_path = '%s%s' % (staging_path, '_swift')
+    utils.make_dir(swift_fileobj_path)
+    tar_path = '%s/%s' % (swift_fileobj_path, obj_name)
+    with open(tar_path, 'w') as file:
+        utils.create_tarball(file, staging_path)
+
+    swift_conn = make_swift_connection(enable_snet, auth_version,
+                                       full_auth_address, user, key)
+
+    create_container_if_missing(container, swift_conn,
+        create_container_on_put)
+
+    # Now we write the object manifest
+    manifest = "%s/%s" % (container, obj_name)
+    headers = {'X-Object-Manifest': manifest}
+
+    try:
+        with open(tar_path, 'r') as file:
+            local_md5 = hashfile(file, hashlib.md5())
+            file.seek(0)
+            swift_md5 = swift_conn.put_object(container, obj_name, file,
+                                              headers=headers)
+    except swift_client.ClientException, e:
+        if e.http_status == httplib.CONFLICT:
+            msg = ("Swift user %s already has an image %s "
+                     "in container %s" % (user, obj_name, container))
+            logging.error(msg)
+            raise Exception(msg)
+        msg = ("Failed to add object to Swift.\n"
+                 "Got error from Swift: %(e)s" % locals())
+        logging.error(msg)
+        raise Exception(msg)
+
+    return (local_md5, swift_md5)
+
+
+def upload_vhd(session, vdi_uuids, sr_path, image_id, **params):
+    staging_path = utils.make_staging_area(sr_path)
+    print staging_path
+    try:
+        utils.prepare_staging_area(sr_path, staging_path, vdi_uuids)
+        (local_md5, swift_md5) = _upload_tarball(staging_path, image_id,
+                                                 **params)
+    finally:
+        utils.cleanup_staging_area(staging_path)
+
+    return {'local_md5': local_md5, 'swift_md5': swift_md5}
+
+if __name__ == '__main__':
+    utils.register_plugin_calls(upload_vhd)
