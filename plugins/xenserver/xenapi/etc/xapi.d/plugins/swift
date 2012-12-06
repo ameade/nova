@@ -112,15 +112,6 @@ def make_swift_connection(enable_snet, auth_version, auth_url, user, key,
                  "(auth_address=%(full_auth_url)s, user=%(user)s, "
                  "snet=%(snet)s, auth_version=%(auth_version)s)" %
                  locals())
-    tenant_name = None
-    if auth_version == '2':
-        tenant_user = user.split(':')
-        if len(tenant_user) != 2:
-            reason = ("Badly formed tenant:user '%(tenant_user)s' in "
-                      "Swift URI" % locals())
-            logging.error(reason)
-            raise Exception(reason)
-        (tenant_name, user) = tenant_user
     return swift_client.Connection(
         full_auth_url, user, key, snet=snet, auth_version=auth_version)
 
@@ -244,7 +235,7 @@ def _upload_tarball(staging_path, image_id, **params):
         return _upload_tarball_to_swift(swift_conn, obj_name, tar_file,
             large_object_size=large_object_size,
             large_object_chunk_size=large_object_chunk_size,
-            container='images')
+            container=container)
 
 
 def upload_vhd(session, vdi_uuids, sr_path, image_id, **params):
