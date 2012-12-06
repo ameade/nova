@@ -26,6 +26,7 @@ from nova.cloudpipe.pipelib import CloudPipe
 from nova.compute import api
 from nova import context
 from nova import db
+from nova.db.sqlalchemy import models
 from nova.network.manager import NetworkManager
 from nova.openstack.common import cfg
 from nova.openstack.common import importutils
@@ -1284,6 +1285,109 @@ class CloudPipeUpdateXmlTest(CloudPipeUpdateJsonTest):
     ctype = "xml"
 
 
+class AgentsJsonTest(ApiSampleTestBase):
+    extension_name = "nova.api.openstack.compute.contrib.agents.Agents"
+
+    def _get_flags(self):
+        f = super(AgentsJsonTest, self)._get_flags()
+        f['osapi_compute_extension'] = CONF.osapi_compute_extension[:]
+        return f
+
+    def setUp(self):
+        super(AgentsJsonTest, self).setUp()
+
+        fake_agents_list = [{'url': 'xxxxxxxxxxxx',
+                             'hypervisor': 'hypervisor',
+                             'architecture': 'x86',
+                             'os': 'os',
+                             'version': '8.0',
+                             'md5hash': 'add6bb58e139be103324d04d82d8f545',
+                             'id': '1'}]
+
+        def fake_agent_build_create(context, values):
+            values['id'] = '1'
+            agent_build_ref = models.AgentBuild()
+            agent_build_ref.update(values)
+            return agent_build_ref
+
+        def fake_agent_build_get_all(context, hypervisor):
+            agent_build_all = []
+            for agent in fake_agents_list:
+                if hypervisor and hypervisor != agent['hypervisor']:
+                    continue
+                agent_build_ref = models.AgentBuild()
+                agent_build_ref.update(agent)
+                agent_build_all.append(agent_build_ref)
+            return agent_build_all
+
+        def fake_agent_build_update(context, agent_build_id, values):
+            pass
+
+        def fake_agent_build_destroy(context, agent_update_id):
+            pass
+
+        self.stubs.Set(db, "agent_build_create",
+                       fake_agent_build_create)
+        self.stubs.Set(db, "agent_build_get_all",
+                       fake_agent_build_get_all)
+        self.stubs.Set(db, "agent_build_update",
+                       fake_agent_build_update)
+        self.stubs.Set(db, "agent_build_destroy",
+                       fake_agent_build_destroy)
+
+    def test_agent_create(self):
+        """Creates a new agent build."""
+        project = {'url': 'xxxxxxxxxxxx',
+                'hypervisor': 'hypervisor',
+                'architecture': 'x86',
+                'os': 'os',
+                'version': '8.0',
+                'md5hash': 'add6bb58e139be103324d04d82d8f545'
+                }
+        response = self._do_post('os-agents', 'agent-post-req',
+                                 project)
+        self.assertEqual(response.status, 200)
+        project['agent_id'] = 1
+        self._verify_response('agent-post-resp', project, response)
+        return project
+
+    def test_agent_list(self):
+        """ Return a list of all agent builds."""
+        response = self._do_get('os-agents')
+        self.assertEqual(response.status, 200)
+        project = {'url': 'xxxxxxxxxxxx',
+                'hypervisor': 'hypervisor',
+                'architecture': 'x86',
+                'os': 'os',
+                'version': '8.0',
+                'md5hash': 'add6bb58e139be103324d04d82d8f545',
+                'agent_id': 1
+                }
+        return self._verify_response('agents-get-resp', project, response)
+
+    def test_agent_update(self):
+        """Update an existing agent build."""
+        agent_id = 1
+        subs = {'version': '7.0',
+                'url': 'xxx://xxxx/xxx/xxx',
+                'md5hash': 'add6bb58e139be103324d04d82d8f545'}
+        response = self._do_put('os-agents/%s' % agent_id,
+                                'agent-update-put-req', subs)
+        self.assertEqual(response.status, 200)
+        subs['agent_id'] = 1
+        return self._verify_response('agent-update-put-resp', subs, response)
+
+    def test_agent_delete(self):
+        """Deletes an existing agent build."""
+        agent_id = 1
+        response = self._do_delete('os-agents/%s' % agent_id)
+        self.assertEqual(response.status, 200)
+
+
+class AgentsXmlTest(AgentsJsonTest):
+    ctype = "xml"
+
+
 class AggregatesSampleJsonTest(ServersSampleBase):
     extension_name = "nova.api.openstack.compute.contrib" + \
                                      ".aggregates.Aggregates"
@@ -1722,3 +1826,29 @@ class QuotasSampleJsonTests(ApiSampleTestBase):
 
 class QuotasSampleXmlTests(QuotasSampleJsonTests):
     ctype = "xml"
+
+
+class ExtendedStatusSampleJsonTests(ServersSampleBase):
+    extension_name = ("nova.api.openstack.compute.contrib"
+                                     ".extended_status.Extended_status")
+
+    def test_show(self):
+        uuid = self._post_server()
+        response = self._do_get('servers')
+        self.assertEqual(response.status, 200)
+        subs = self._get_regexes()
+        subs['id'] = uuid
+        return self._verify_response('servers-list-resp', subs, response)
+
+    def test_detail(self):
+        uuid = self._post_server()
+        response = self._do_get('servers/detail')
+        self.assertEqual(response.status, 200)
+        subs = self._get_regexes()
+        subs['id'] = uuid
+        subs['hostid'] = '[a-f0-9]+'
+        return self._verify_response('servers-detail-resp', subs, response)
+
+
+class ExtendedStatusSampleXmlTests(ExtendedStatusSampleJsonTests):
+        ctype = 'xml'

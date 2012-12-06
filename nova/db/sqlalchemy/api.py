@@ -1987,16 +1987,16 @@ def key_pair_create(context, values):
 @require_context
 def key_pair_destroy(context, user_id, name):
     authorize_user_context(context, user_id)
-    session = get_session()
-    with session.begin():
-        key_pair_ref = key_pair_get(context, user_id, name, session=session)
-        key_pair_ref.delete(session=session)
+    model_query(context, models.KeyPair).\
+             filter_by(user_id=user_id).\
+             filter_by(name=name).\
+             delete()
 
 
 @require_context
-def key_pair_get(context, user_id, name, session=None):
+def key_pair_get(context, user_id, name):
     authorize_user_context(context, user_id)
-    result = model_query(context, models.KeyPair, session=session).\
+    result = model_query(context, models.KeyPair).\
                      filter_by(user_id=user_id).\
                      filter_by(name=name).\
                      first()
@@ -3968,8 +3968,13 @@ def agent_build_get_by_triple(context, hypervisor, os, architecture,
 
 
 @require_admin_context
-def agent_build_get_all(context):
-    return model_query(context, models.AgentBuild, read_deleted="no").\
+def agent_build_get_all(context, hypervisor=None):
+    if hypervisor:
+        return model_query(context, models.AgentBuild, read_deleted="no").\
+                   filter_by(hypervisor=hypervisor).\
+                   all()
+    else:
+        return model_query(context, models.AgentBuild, read_deleted="no").\
                    all()
 
 
@@ -3977,12 +3982,15 @@ def agent_build_get_all(context):
 def agent_build_destroy(context, agent_build_id):
     session = get_session()
     with session.begin():
-        model_query(context, models.AgentBuild, session=session,
-                    read_deleted="yes").\
+        agent_build_ref = model_query(context, models.AgentBuild,
+                    session=session, read_deleted="yes").\
                 filter_by(id=agent_build_id).\
-                update({'deleted': True,
-                        'deleted_at': timeutils.utcnow(),
-                        'updated_at': literal_column('updated_at')})
+                first()
+        if not agent_build_ref:
+            raise exception.AgentBuildNotFound(id=agent_build_id)
+        agent_build_ref.update({'deleted': True,
+                                'deleted_at': timeutils.utcnow(),
+                                'updated_at': literal_column('updated_at')})
 
 
 @require_admin_context
@@ -3993,7 +4001,8 @@ def agent_build_update(context, agent_build_id, values):
                                       session=session, read_deleted="yes").\
                    filter_by(id=agent_build_id).\
                    first()
-
+        if not agent_build_ref:
+            raise exception.AgentBuildNotFound(id=agent_build_id)
         agent_build_ref.update(values)
         agent_build_ref.save(session=session)
 
