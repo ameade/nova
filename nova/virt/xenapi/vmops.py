@@ -674,11 +674,12 @@ class VMOps(object):
                 update_task_state) as vdi_uuids:
             update_task_state(task_state=task_states.IMAGE_UPLOADING,
                               expected_state=task_states.IMAGE_PENDING_UPLOAD)
-            vm_utils.upload_image(
-                    context, self._session, instance, vdi_uuids, image_id)
+            image_metadata = vm_utils.upload_image(
+                        context, self._session, instance, vdi_uuids, image_id)
 
         LOG.debug(_("Finished snapshot and upload for VM"),
                   instance=instance)
+        return image_metadata
 
     def _migrate_vhd(self, instance, vdi_uuid, dest, sr_path, seq_num):
         LOG.debug(_("Migrating VHD '%(vdi_uuid)s' with seq_num %(seq_num)d"),
