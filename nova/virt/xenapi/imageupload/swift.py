@@ -15,6 +15,7 @@
 
 import urllib
 
+from nova import exception
 from nova.openstack.common import cfg
 import nova.openstack.common.log as logging
 
@@ -103,3 +104,61 @@ class SwiftStore(object):
             key = urllib.quote(CONF.swift_store_key)
             return '%s:%s@' % (user, key)
         return ''
+
+    def upload_image(self, context, session, instance, vdi_uuids, image_id,
+                     sr_path):
+        """Requests that the Swift plugin bundle the specified VDIs and
+        push them into Swift.
+        """
+        # NOTE(sirp): Currently we only support uploading images as VHD, there
+        # is no RAW equivalent (yet)
+        LOG.debug(_("Asking xapi to upload to swift %(vdi_uuids)s as"
+                    " ID %(image_id)s"), locals(), instance=instance)
+
+        large_object_size = CONF.swift_store_large_object_size
+        large_object_chunk_size = CONF.swift_store_large_object_chunk_size
+        create_container_on_put = CONF.swift_store_create_container_on_put
+
+        params = {'vdi_uuids': vdi_uuids,
+                  'image_id': image_id,
+                  'sr_path': sr_path,
+                  'swift_enable_snet': CONF.swift_enable_snet,
+                  'swift_store_auth_version': CONF.swift_store_auth_version,
+                  'swift_store_container': CONF.swift_store_container,
+                  'swift_store_large_object_size': large_object_size,
+                  'swift_store_large_object_chunk_size': large_object_chunk_size,
+                  'swift_store_create_container_on_put': create_container_on_put,
+                 }
+
+        if CONF.swift_store_region:
+            params['region_name'] = CONF.swift_store_region
+
+        if CONF.swift_store_multitenant:
+            params['storage_url'] = None
+            if context.service_catalog:
+                service_catalog = context.service_catalog
+                endpoint = self._get_object_store_endpoint(service_catalog,
+                                      region=CONF.swift_store_region)
+                params['storage_url'] = endpoint['publicURL']
+            params['token'] = context.auth_token
+        else:
+            params['swift_store_user'] = CONF.swift_store_user
+            params['swift_store_key'] = CONF.swift_store_key
+            params['full_auth_address'] = CONF.swift_store_auth_address
+
+        return session.call_plugin_serialized('swift', 'upload_vhd', **params)
+
+    def _get_object_store_endpoint(self, service_catalog, region=None):
+        endpoints = []
+        for service in service_catalog:
+            if service.get('type') == 'object-store':
+                for ep in service['endpoints']:
+                    if not region or region == ep['region']:
+                        endpoints.append(ep)
+
+        if len(service['endpoints']) == 1:
+            return endpoints[0]
+        elif len(service['endpoints']) > 1:
+            raise exception.RegionAmbiguity(region=region)
+
+        raise exception.NoServiceEndpoint(service_id='object-store')

@@ -1276,7 +1276,7 @@ class ComputeTestCase(BaseTestCase):
         fake_image.stub_out_image_service(self.stubs)
         self.stubs.Set(fake_image._FakeImageService, 'update', fake_update)
 
-        self.flags(image_upload_handler='nova.image.store.swift.SwiftStore')
+        self.flags(image_upload_handler='nova.virt.xenapi.imageupload.swift.SwiftStore')
         instance = jsonutils.to_primitive(self._create_fake_instance())
         name = "myfakesnapshot"
         self.compute.run_instance(self.context, instance=instance)

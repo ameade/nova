@@ -104,11 +104,6 @@ compute_opts = [
                 default=False,
                 help='Whether to start guests that were running before the '
                      'host rebooted'),
-    cfg.StrOpt('image_upload_handler',
-                default=None,
-                help='Object Store Driver used to handle image uploads.'
-                     ' When the value is not set, or is invalid the images'
-                     ' are uploaded through glance'),
     ]
 
 interval_opts = [

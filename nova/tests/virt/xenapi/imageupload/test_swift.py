@@ -18,8 +18,8 @@
 
 import uuid
 
-from nova.image.store import swift
 from nova import test
+from nova.virt.xenapi.imageupload import swift
 
 
 class TestSwiftStore(test.TestCase):
