@@ -15,7 +15,6 @@
 
 import urllib
 
-from nova.image.store import base
 from nova.openstack.common import cfg
 import nova.openstack.common.log as logging
 
@@ -70,7 +69,7 @@ CONF = cfg.CONF
 CONF.register_opts(swift_opts)
 
 
-class SwiftStore(base.Store):
+class SwiftStore(object):
 
     def __repr__(self):
         return "swift"

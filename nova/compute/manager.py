@@ -104,7 +104,7 @@ compute_opts = [
                 default=False,
                 help='Whether to start guests that were running before the '
                      'host rebooted'),
-    cfg.StrOpt('image_store',
+    cfg.StrOpt('image_upload_handler',
                 default=None,
                 help='Object Store Driver used to handle image uploads.'
                      ' When the value is not set, or is invalid the images'
@@ -1527,14 +1527,13 @@ class ComputeManager(manager.SchedulerDependentManager):
         :param image_metadata: image metadata to be updated in glance
         """
         image_service = glance.get_default_image_service()
-        image_store = importutils.import_object(CONF.image_store)
-        location = image_store.get_location(image_id)
+        image_handler = importutils.import_object(CONF.image_upload_handler)
+        location = image_handler.get_location(image_id)
         image_meta = {'checksum': image_metadata['etag'],
                       'size': image_metadata['image_size'],
                       'location': location,
                       'disk_format': image_metadata['disk_format'],
                       'container_format': image_metadata['container_format']}
-        print "WTF I am here"
         image_service.update(context, image_id, image_meta, purge_props=False)
 
     def _delete_image_glance(self, context, image_id):

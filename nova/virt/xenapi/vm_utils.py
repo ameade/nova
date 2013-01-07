@@ -719,14 +719,14 @@ def _find_cached_image(session, image_id, sr_ref):
 def upload_image(context, session, instance, vdi_uuids, image_id):
     """Bundle the specified VDIs and upload them.
 
-    Depending on the configured value of 'image_store', image
+    Depending on the configured value of 'image_upload_handler', image
     data may be pushed to Glance or the specified data store.
     """
-    image_store = None
-    if CONF.image_store:
-        image_store = importutils.import_object(CONF.image_store)
+    image_handler = None
+    if CONF.image_upload_handler:
+        image_handler = importutils.import_object(CONF.image_upload_handler)
 
-    if image_store and str(image_store) == 'swift':
+    if image_handler and str(image_handler) == 'swift':
         return _upload_image_swift(context, session, instance, vdi_uuids,
                                   image_id)
     else:
