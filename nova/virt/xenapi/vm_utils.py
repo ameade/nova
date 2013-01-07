@@ -121,7 +121,12 @@ xenapi_vm_utils_opts = [
     cfg.IntOpt('xenapi_torrent_max_seeder_processes_per_host',
                default=1,
                help='Maximum number of seeder processes to run concurrently'
-                    ' within a given dom0. (-1 = no limit)')
+                    ' within a given dom0. (-1 = no limit)'),
+    cfg.StrOpt('image_upload_handler',
+                default=None,
+                help='Object Store Driver used to handle image uploads.'
+                     ' When the value is not set, or is invalid the images'
+                     ' are uploaded through glance'),
     ]
 
 CONF = cfg.CONF
