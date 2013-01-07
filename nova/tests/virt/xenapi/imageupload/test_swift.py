@@ -16,10 +16,16 @@
 #    under the License.
 
 
+import mox
 import uuid
 
+from nova import context
+from nova.openstack.common import cfg
 from nova import test
 from nova.virt.xenapi.imageupload import swift
+
+
+CONF = cfg.CONF
 
 
 class TestSwiftStore(test.TestCase):
@@ -29,6 +35,7 @@ class TestSwiftStore(test.TestCase):
         self.flags(swift_store_user="user")
         self.flags(swift_store_key="password")
         self.flags(swift_store_container="the_container")
+        self.mox = mox.Mox()
 
     def tearDown(self):
         super(TestSwiftStore, self).tearDown()
@@ -48,3 +55,61 @@ class TestSwiftStore(test.TestCase):
                     "v2.0/the_container/%s" % image_id)
         actual = self.store.get_location(image_id)
         self.assertEqual(actual, expected)
+
+    def test_upload_image_single_tenant(self):
+        self.flags(swift_store_multitenant=False)
+
+        large_object_size = CONF.swift_store_large_object_size
+        large_chunk_size = CONF.swift_store_large_object_chunk_size
+        create_container = CONF.swift_store_create_container_on_put
+
+        params = {'vdi_uuids': None,
+                  'image_id': None,
+                  'sr_path': None,
+                  'swift_enable_snet': CONF.swift_enable_snet,
+                  'swift_store_auth_version': CONF.swift_store_auth_version,
+                  'swift_store_container': CONF.swift_store_container,
+                  'swift_store_large_object_size': large_object_size,
+                  'swift_store_large_object_chunk_size': large_chunk_size,
+                  'swift_store_create_container_on_put': create_container,
+                  # Single tenant specific kwargs
+                  'swift_store_user': CONF.swift_store_user,
+                  'swift_store_key': CONF.swift_store_key,
+                  'full_auth_address': CONF.swift_store_auth_address,
+                 }
+        session = self.mox.CreateMockAnything()
+        session.call_plugin_serialized('swift', 'upload_vhd', **params)
+        self.mox.ReplayAll()
+
+        self.store.upload_image(None, session, None, None, None, None)
+
+        self.mox.VerifyAll()
+
+    def test_upload_image_multitenant(self):
+        self.flags(swift_store_multitenant=True)
+
+        ctx = context.RequestContext('user', 'project', auth_token='foobar')
+        large_object_size = CONF.swift_store_large_object_size
+        large_chunk_size = CONF.swift_store_large_object_chunk_size
+        create_container = CONF.swift_store_create_container_on_put
+
+        params = {'vdi_uuids': None,
+                  'image_id': None,
+                  'sr_path': None,
+                  'swift_enable_snet': CONF.swift_enable_snet,
+                  'swift_store_auth_version': CONF.swift_store_auth_version,
+                  'swift_store_container': CONF.swift_store_container,
+                  'swift_store_large_object_size': large_object_size,
+                  'swift_store_large_object_chunk_size': large_chunk_size,
+                  'swift_store_create_container_on_put': create_container,
+                  # multitenant specific kwargs
+                  'storage_url': None,
+                  'token': 'foobar',
+                 }
+        session = self.mox.CreateMockAnything()
+        session.call_plugin_serialized('swift', 'upload_vhd', **params)
+        self.mox.ReplayAll()
+
+        self.store.upload_image(ctx, session, None, None, None, None)
+
+        self.mox.VerifyAll()

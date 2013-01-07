@@ -116,8 +116,8 @@ class SwiftStore(object):
                     " ID %(image_id)s"), locals(), instance=instance)
 
         large_object_size = CONF.swift_store_large_object_size
-        large_object_chunk_size = CONF.swift_store_large_object_chunk_size
-        create_container_on_put = CONF.swift_store_create_container_on_put
+        large_chunk_size = CONF.swift_store_large_object_chunk_size
+        create_container = CONF.swift_store_create_container_on_put
 
         params = {'vdi_uuids': vdi_uuids,
                   'image_id': image_id,
@@ -126,8 +126,8 @@ class SwiftStore(object):
                   'swift_store_auth_version': CONF.swift_store_auth_version,
                   'swift_store_container': CONF.swift_store_container,
                   'swift_store_large_object_size': large_object_size,
-                  'swift_store_large_object_chunk_size': large_object_chunk_size,
-                  'swift_store_create_container_on_put': create_container_on_put,
+                  'swift_store_large_object_chunk_size': large_chunk_size,
+                  'swift_store_create_container_on_put': create_container,
                  }
 
         if CONF.swift_store_region:
