@@ -59,7 +59,10 @@ xenapi_vmops_opts = [
                     'to go to running state'),
     cfg.StrOpt('xenapi_vif_driver',
                default='nova.virt.xenapi.vif.XenAPIBridgeDriver',
-               help='The XenAPI VIF driver using XenServer Network APIs.')
+               help='The XenAPI VIF driver using XenServer Network APIs.'),
+    cfg.StrOpt('image_upload_handler',
+                default='nova.virt.xenapi.imageupload.glance.GlanceStore',
+                help='Object Store Driver used to handle image uploads.'),
     ]
 
 CONF = cfg.CONF
@@ -661,25 +664,30 @@ class VMOps(object):
            coalesce together, so, we must wait for this coalescing to occur to
            get a stable representation of the data on disk.
 
-        3. Push-to-glance: Once coalesced, we call a plugin on the XenServer
-           that will bundle the VHDs together and then push the bundle into
-           Glance.
+        3. Push-to-data-store: Once coalesced, we call a plugin on the
+           XenServer that will bundle the VHDs together and then push the
+           bundle. Depending on the configured value of
+           'image_upload_handler', image data may be pushed to Glance or
+           the specified data store.
 
         """
         vm_ref = self._get_vm_opaque_ref(instance)
         label = "%s-snapshot" % instance['name']
+
+        msg = _("Importing image upload handler: %s")
+        LOG.debug(msg % CONF.image_upload_handler)
+        image_handler = importutils.import_object(CONF.image_upload_handler)
 
         with vm_utils.snapshot_attached_here(
                 self._session, instance, vm_ref, label,
                 update_task_state) as vdi_uuids:
             update_task_state(task_state=task_states.IMAGE_UPLOADING,
                               expected_state=task_states.IMAGE_PENDING_UPLOAD)
-            image_metadata = vm_utils.upload_image(
-                        context, self._session, instance, vdi_uuids, image_id)
+            image_handler.upload_image(context, self._session, instance,
+                                       vdi_uuids, image_id)
 
         LOG.debug(_("Finished snapshot and upload for VM"),
                   instance=instance)
-        return image_metadata
 
     def _migrate_vhd(self, instance, vdi_uuid, dest, sr_path, seq_num):
         LOG.debug(_("Migrating VHD '%(vdi_uuid)s' with seq_num %(seq_num)d"),

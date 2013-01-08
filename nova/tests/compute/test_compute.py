@@ -19,7 +19,6 @@
 """Tests for compute service."""
 
 import base64
-from collections import defaultdict
 import copy
 import datetime
 import sys
@@ -1273,36 +1272,6 @@ class ComputeTestCase(BaseTestCase):
         self.compute.snapshot_instance(self.context, name, instance=instance)
         self.compute.terminate_instance(self.context, instance=instance)
 
-    def test_snapshot_direct_upload_to_store(self):
-        """Ensure instance can be snapshotted"""
-        called = {'snapshot': False, 'update': False}
-
-        def fake_snapshot(*args, **kwargs):
-            called['snapshot'] = True
-            to_return = defaultdict(lambda: None)
-            return to_return
-
-        self.stubs.Set(self.compute.driver, 'snapshot', fake_snapshot)
-
-        def fake_update(*_args, **_kwargs):
-            called['update'] = True
-
-        fake_image.stub_out_image_service(self.stubs)
-        self.stubs.Set(fake_image._FakeImageService, 'update', fake_update)
-
-        image_upload_handler = 'nova.virt.xenapi.imageupload.swift.SwiftStore'
-        self.flags(image_upload_handler=image_upload_handler)
-        instance = jsonutils.to_primitive(self._create_fake_instance())
-        name = "myfakesnapshot"
-        self.compute.run_instance(self.context, instance=instance)
-        db.instance_update(self.context, instance['uuid'],
-                           {"task_state": task_states.IMAGE_SNAPSHOT})
-        self.compute.snapshot_instance(self.context, name, instance=instance)
-        self.compute.terminate_instance(self.context, instance=instance)
-
-        self.assertTrue(called['snapshot'])
-        self.assertTrue(called['update'])
-
     def test_snapshot_no_image(self):
         params = {'image_ref': ''}
         name = "myfakesnapshot"
@@ -1315,7 +1284,6 @@ class ComputeTestCase(BaseTestCase):
 
     def test_snapshot_fails(self):
         """Ensure task_state is set to None if snapshot fails"""
-
         def fake_snapshot(*args, **kwargs):
             raise test.TestingException()
 
@@ -1325,39 +1293,11 @@ class ComputeTestCase(BaseTestCase):
         self.compute.run_instance(self.context, instance=instance)
         db.instance_update(self.context, instance['uuid'],
                            {"task_state": task_states.IMAGE_SNAPSHOT})
-        self.compute.snapshot_instance(self.context,
-                                       "failing_snapshot",
-                                       instance=instance)
+        self.assertRaises(test.TestingException,
+                          self.compute.snapshot_instance,
+                          self.context, "failing_snapshot", instance=instance)
         self._assert_state({'task_state': None})
         self.compute.terminate_instance(self.context, instance=instance)
-
-    def test_snapshot_fails_direct_upload_to_store(self):
-        """Ensure task_state is set to None if snapshot fails"""
-        called = {'snapshot': False, 'delete': False}
-
-        def fake_snapshot(*args, **kwargs):
-            called['snapshot'] = True
-            raise test.TestingException()
-
-        self.stubs.Set(self.compute.driver, 'snapshot', fake_snapshot)
-
-        def fake_delete(*_args, **_kwargs):
-            called['delete'] = True
-
-        fake_image.stub_out_image_service(self.stubs)
-        self.stubs.Set(fake_image._FakeImageService, 'delete', fake_delete)
-
-        instance = jsonutils.to_primitive(self._create_fake_instance())
-        self.compute.run_instance(self.context, instance=instance)
-        db.instance_update(self.context, instance['uuid'],
-                           {"task_state": task_states.IMAGE_SNAPSHOT})
-        self.compute.snapshot_instance(self.context,
-                                       "failing_snapshot",
-                                       instance=instance)
-        self._assert_state({'task_state': None})
-        self.compute.terminate_instance(self.context, instance=instance)
-        self.assertTrue(called['snapshot'])
-        self.assertTrue(called['delete'])
 
     def _assert_state(self, state_dict):
         """Assert state of VM is equal to state passed as parameter."""
