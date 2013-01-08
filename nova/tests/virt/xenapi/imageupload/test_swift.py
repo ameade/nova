@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2012 OpenStack LLC.
+# Copyright 2013 OpenStack LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -23,6 +23,7 @@ from nova import context
 from nova.openstack.common import cfg
 from nova import test
 from nova.virt.xenapi.imageupload import swift
+from nova.virt.xenapi import vm_utils
 
 
 CONF = cfg.CONF
@@ -59,6 +60,11 @@ class TestSwiftStore(test.TestCase):
     def test_upload_image_single_tenant(self):
         self.flags(swift_store_multitenant=False)
 
+        def fake_get_sr_path(*_args, **_kwargs):
+            return None
+
+        self.stubs.Set(vm_utils, 'get_sr_path', fake_get_sr_path)
+
         large_object_size = CONF.swift_store_large_object_size
         large_chunk_size = CONF.swift_store_large_object_chunk_size
         create_container = CONF.swift_store_create_container_on_put
@@ -81,12 +87,17 @@ class TestSwiftStore(test.TestCase):
         session.call_plugin_serialized('swift', 'upload_vhd', **params)
         self.mox.ReplayAll()
 
-        self.store.upload_image(None, session, None, None, None, None)
+        self.store.upload_image(None, session, None, None, None)
 
         self.mox.VerifyAll()
 
     def test_upload_image_multitenant(self):
         self.flags(swift_store_multitenant=True)
+
+        def fake_get_sr_path(*_args, **_kwargs):
+            return None
+
+        self.stubs.Set(vm_utils, 'get_sr_path', fake_get_sr_path)
 
         ctx = context.RequestContext('user', 'project', auth_token='foobar')
         large_object_size = CONF.swift_store_large_object_size
@@ -110,6 +121,6 @@ class TestSwiftStore(test.TestCase):
         session.call_plugin_serialized('swift', 'upload_vhd', **params)
         self.mox.ReplayAll()
 
-        self.store.upload_image(ctx, session, None, None, None, None)
+        self.store.upload_image(ctx, session, None, None, None)
 
         self.mox.VerifyAll()

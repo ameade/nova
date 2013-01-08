@@ -1,4 +1,4 @@
-# Copyright 2012 OpenStack, LLC
+# Copyright 2013 OpenStack, LLC
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -18,6 +18,7 @@ import urllib
 from nova import exception
 from nova.openstack.common import cfg
 import nova.openstack.common.log as logging
+from nova.virt.xenapi import vm_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -105,8 +106,7 @@ class SwiftStore(object):
             return '%s:%s@' % (user, key)
         return ''
 
-    def upload_image(self, context, session, instance, vdi_uuids, image_id,
-                     sr_path):
+    def upload_image(self, context, session, instance, vdi_uuids, image_id):
         """Requests that the Swift plugin bundle the specified VDIs and
         push them into Swift.
         """
@@ -121,7 +121,7 @@ class SwiftStore(object):
 
         params = {'vdi_uuids': vdi_uuids,
                   'image_id': image_id,
-                  'sr_path': sr_path,
+                  'sr_path': vm_utils.get_sr_path(session),
                   'swift_enable_snet': CONF.swift_enable_snet,
                   'swift_store_auth_version': CONF.swift_store_auth_version,
                   'swift_store_container': CONF.swift_store_container,
