@@ -41,7 +41,6 @@ from nova import exception
 from nova.image import glance
 from nova.openstack.common import cfg
 from nova.openstack.common import excutils
-from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova import utils
 from nova.virt.disk import api as disk
@@ -119,12 +118,7 @@ xenapi_vm_utils_opts = [
     cfg.IntOpt('xenapi_torrent_max_seeder_processes_per_host',
                default=1,
                help='Maximum number of seeder processes to run concurrently'
-                    ' within a given dom0. (-1 = no limit)'),
-    cfg.StrOpt('image_upload_handler',
-                default=None,
-                help='Object Store Driver used to handle image uploads.'
-                     ' When the value is not set, or is invalid the images'
-                     ' are uploaded through glance'),
+                    ' within a given dom0. (-1 = no limit)')
     ]
 
 CONF = cfg.CONF
@@ -719,112 +713,6 @@ def _find_cached_image(session, image_id, sr_ref):
     """Returns the vdi-ref of the cached image."""
     cached_images = _find_cached_images(session, sr_ref)
     return cached_images.get(image_id)
-
-
-def upload_image(context, session, instance, vdi_uuids, image_id):
-    """Bundle the specified VDIs and upload them.
-
-    Depending on the configured value of 'image_upload_handler', image
-    data may be pushed to Glance or the specified data store.
-    """
-    image_handler = None
-    if CONF.image_upload_handler:
-        image_handler = importutils.import_object(CONF.image_upload_handler)
-
-    if image_handler and str(image_handler) == 'swift':
-        return _upload_image_swift(context, session, instance, vdi_uuids,
-                                  image_id)
-    else:
-        return _upload_image_glance(context, session, instance, vdi_uuids,
-                                   image_id)
-
-
-def _upload_image_swift(context, session, instance, vdi_uuids, image_id):
-    """Requests that the Swift plugin bundle the specified VDIs and
-    push them into Swift.
-    """
-    # NOTE(sirp): Currently we only support uploading images as VHD, there
-    # is no RAW equivalent (yet)
-    LOG.debug(_("Asking xapi to upload to swift %(vdi_uuids)s as"
-                " ID %(image_id)s"), locals(), instance=instance)
-
-    large_object_size = CONF.swift_store_large_object_size
-    large_object_chunk_size = CONF.swift_store_large_object_chunk_size
-    create_container_on_put = CONF.swift_store_create_container_on_put
-
-    params = {'vdi_uuids': vdi_uuids,
-              'image_id': image_id,
-              'sr_path': get_sr_path(session),
-              'swift_enable_snet': CONF.swift_enable_snet,
-              'swift_store_auth_version': CONF.swift_store_auth_version,
-              'swift_store_container': CONF.swift_store_container,
-              'swift_store_large_object_size': large_object_size,
-              'swift_store_large_object_chunk_size': large_object_chunk_size,
-              'swift_store_create_container_on_put': create_container_on_put,
-             }
-
-    if CONF.swift_store_region:
-        params['region_name'] = CONF.swift_store_region
-
-    if CONF.swift_store_multitenant:
-        params['storage_url'] = None
-        if context.service_catalog:
-            service_catalog = context.service_catalog
-            endpoint = _get_object_store_endpoint(service_catalog,
-                                  region=CONF.swift_store_region)
-            params['storage_url'] = endpoint['publicURL']
-        params['token'] = context.auth_token
-    else:
-        params['swift_store_user'] = CONF.swift_store_user
-        params['swift_store_key'] = CONF.swift_store_key
-        params['full_auth_address'] = CONF.swift_store_auth_address
-
-    return session.call_plugin_serialized('swift', 'upload_vhd', **params)
-
-
-def _get_object_store_endpoint(service_catalog, region=None):
-    endpoints = []
-    for service in service_catalog:
-        if service.get('type') == 'object-store':
-            for ep in service['endpoints']:
-                if not region or region == ep['region']:
-                    endpoints.append(ep)
-
-    if len(service['endpoints']) == 1:
-        return endpoints[0]
-    elif len(service['endpoints']) > 1:
-        raise exception.RegionAmbiguity(region=region)
-
-    raise exception.NoServiceEndpoint(service_id='object-store')
-
-
-def _upload_image_glance(context, session, instance, vdi_uuids, image_id):
-    """Requests that the Glance plugin bundle the specified VDIs and
-    push them into Glance using the specified human-friendly name.
-    """
-    # NOTE(sirp): Currently we only support uploading images as VHD, there
-    # is no RAW equivalent (yet)
-    LOG.debug(_("Asking xapi to upload to glance %(vdi_uuids)s as"
-                " ID %(image_id)s"), locals(), instance=instance)
-
-    glance_api_servers = glance.get_api_servers()
-    glance_host, glance_port, glance_use_ssl = glance_api_servers.next()
-
-    properties = {
-        'auto_disk_config': instance['auto_disk_config'],
-        'os_type': instance['os_type'] or CONF.default_os_type,
-    }
-
-    params = {'vdi_uuids': vdi_uuids,
-              'image_id': image_id,
-              'glance_host': glance_host,
-              'glance_port': glance_port,
-              'glance_use_ssl': glance_use_ssl,
-              'sr_path': get_sr_path(session),
-              'auth_token': getattr(context, 'auth_token', None),
-              'properties': properties}
-
-    session.call_plugin_serialized('glance', 'upload_vhd', **params)
 
 
 def resize_disk(session, instance, vdi_ref, instance_type):
