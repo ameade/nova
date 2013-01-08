@@ -16,6 +16,7 @@
 import urllib
 
 from nova import exception
+from nova.image import glance
 from nova.openstack.common import cfg
 import nova.openstack.common.log as logging
 from nova.virt.xenapi import vm_utils
@@ -73,6 +74,10 @@ CONF.register_opts(swift_opts)
 
 class SwiftStore(object):
 
+    def __init__(self, image_service=None):
+        self.image_service = (image_service or
+                              glance.get_default_image_service())
+
     def __repr__(self):
         return "swift"
 
@@ -107,6 +112,22 @@ class SwiftStore(object):
         return ''
 
     def upload_image(self, context, session, instance, vdi_uuids, image_id):
+        """
+        """
+        try:
+            image_metadata = self.upload_vhd(context,
+                                             session,
+                                             instance,
+                                             vdi_uuids,
+                                             image_id)
+        except Exception:
+            LOG.exception(_('Error taking snapshot'))
+            LOG.warn(_('Deleting image %s') % image_id)
+            self._delete_image_glance(context, image_id)
+        else:
+            self._update_image_glance(context, image_id, image_metadata)
+
+    def upload_vhd(self, context, session, instance, vdi_uuids, image_id):
         """Requests that the Swift plugin bundle the specified VDIs and
         push them into Swift.
         """
@@ -162,3 +183,25 @@ class SwiftStore(object):
             raise exception.RegionAmbiguity(region=region)
 
         raise exception.NoServiceEndpoint(service_id='object-store')
+
+    def _update_image_glance(self, context, image_id, image_metadata):
+        """Updates Image with the metadata obtained after upload to store.
+
+        :param context: security context
+        :param image_id: glance.db.sqlalchemy.models.Image.Id
+        :param image_metadata: image metadata to be updated in glance
+        """
+        image_meta = {'checksum': image_metadata['etag'],
+                      'size': image_metadata['image_size'],
+                      'location': self.get_location(image_id),
+                      'disk_format': image_metadata['disk_format'],
+                      'container_format': image_metadata['container_format']}
+        self.image_service.update(context, image_id, image_meta,
+                                  purge_props=False)
+
+    def _delete_image_glance(self, context, image_id):
+        try:
+            self.image_service.delete(context, image_id)
+        except exception.ImageNotFound:
+            msg = _('Could not cleanup image %s, it does not exist in glance')
+            LOG.warn(msg % image_id)
