@@ -42,20 +42,20 @@ class TestSwiftStore(test.TestCase):
     def tearDown(self):
         super(TestSwiftStore, self).tearDown()
 
-    def test_get_location_http(self):
+    def test_get_image_url_http(self):
         self.flags(swift_store_auth_address="http://localhost:5000/v2.0/")
         image_id = str(uuid.uuid4())
         expected = ("swift+http://user:password@localhost:5000/"
                     "v2.0/the_container/%s" % image_id)
-        actual = self.store.get_location(image_id)
+        actual = self.store.get_image_url(image_id)
         self.assertEqual(actual, expected)
 
-    def test_get_location_https(self):
+    def test_get_image_url_https(self):
         self.flags(swift_store_auth_address="https://localhost:5000/v2.0/")
         image_id = str(uuid.uuid4())
         expected = ("swift+https://user:password@localhost:5000/"
                     "v2.0/the_container/%s" % image_id)
-        actual = self.store.get_location(image_id)
+        actual = self.store.get_image_url(image_id)
         self.assertEqual(actual, expected)
 
     def test_upload_vhd_single_tenant(self):

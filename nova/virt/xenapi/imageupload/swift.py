@@ -81,7 +81,7 @@ class SwiftStore(object):
     def __repr__(self):
         return "swift"
 
-    def get_location(self, image_id):
+    def get_image_url(self, image_id):
         """
         Creates location uri for the specified image.
 
@@ -193,7 +193,7 @@ class SwiftStore(object):
         """
         image_meta = {'checksum': image_metadata['etag'],
                       'size': image_metadata['image_size'],
-                      'location': self.get_location(image_id),
+                      'location': self.get_image_url(image_id),
                       'disk_format': image_metadata['disk_format'],
                       'container_format': image_metadata['container_format']}
         self.image_service.update(context, image_id, image_meta,

@@ -64,7 +64,7 @@ def hashfile(afile, hasher, blocksize=65536):
     return hasher.hexdigest()
 
 
-def create_container_if_missing(swift_conn, container):
+def _create_container_if_missing(swift_conn, container):
     """
     Creates a missing container in Swift if the
     ``swift_store_create_container_on_put`` option is set.
@@ -89,7 +89,7 @@ def create_container_if_missing(swift_conn, container):
             raise Exception(msg)
 
 
-def make_swift_connection(snet, auth_url, auth_version, user, key,
+def _make_swift_connection(snet, auth_url, auth_version, user, key,
                           os_options={}, storage_url=None, token=None):
     """
     Creates a connection using the Swift client library.
@@ -141,6 +141,7 @@ def _upload_tarball_to_swift(swift_conn, obj_name, tar_file, tar_size=0,
 
     # Write the image into Swift in chunks.
     chunk_id = 1
+    total_chunks = '?'
     if tar_size > 0:
         total_chunks = str(int(
             math.ceil(float(tar_size) /
@@ -151,7 +152,6 @@ def _upload_tarball_to_swift(swift_conn, obj_name, tar_file, tar_size=0,
         # that don't inspect the payload size.
         logging.debug("Cannot determine image size. Adding as a "
                       "segmented object to Swift.")
-        total_chunks = '?'
 
     checksum = hashlib.md5()
     combined_chunks_size = 0
@@ -272,13 +272,13 @@ def _upload_tarball(staging_path, image_id, **params):
         utils.create_tarball(tar_file, staging_path)
     tar_size = os.path.getsize(tar_path)
 
-    swift_conn = make_swift_connection(enable_snet, full_auth_address,
+    swift_conn = _make_swift_connection(enable_snet, full_auth_address,
                                        auth_version, user, key,
                                        storage_url=storage_url, token=token,
                                        os_options=os_options)
 
     if create_container_on_put:
-        create_container_if_missing(swift_conn, container)
+        _create_container_if_missing(swift_conn, container)
 
     with open(tar_path, 'r') as tar_file:
         etag = _upload_tarball_to_swift(swift_conn, obj_name, tar_file,
