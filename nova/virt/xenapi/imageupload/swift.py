@@ -77,6 +77,7 @@ class SwiftStore(object):
     def __init__(self, image_service=None):
         self.image_service = (image_service or
                               glance.get_default_image_service())
+        self.store_url = None
 
     def __repr__(self):
         return "swift"
@@ -87,7 +88,7 @@ class SwiftStore(object):
 
         :param image_id id of the image
         """
-        auth_or_store_url = CONF.swift_store_auth_address
+        auth_or_store_url = self.store_url or CONF.swift_store_auth_address
         scheme = 'swift+https'
 
         if auth_or_store_url.startswith('http://'):
@@ -105,17 +106,17 @@ class SwiftStore(object):
                                     container, obj)
 
     def _get_credstring(self):
-        if CONF.swift_store_user and CONF.swift_store_key:
+        if not CONF.swift_store_multitenant:
             user = urllib.quote(CONF.swift_store_user)
             key = urllib.quote(CONF.swift_store_key)
             return '%s:%s@' % (user, key)
         return ''
 
     def upload_image(self, context, session, instance, vdi_uuids, image_id):
-        """ Uploads the image data to swift.
+        """Uploads the image data to swift and updates the image metadata in
+        glance.
 
-        Uploads the image data to swift and updates the image metadata in
-        glance. If any errors occur in the upload process then the image is deleted.
+        If any errors occur in the upload process then the image is deleted.
         """
         try:
             image_metadata = self.upload_vhd(context,
@@ -163,6 +164,7 @@ class SwiftStore(object):
                 service_catalog = context.service_catalog
                 endpoint = self._get_object_store_endpoint(service_catalog,
                                       region=CONF.swift_store_region)
+                self.store_url = endpoint['publicURL']
                 params['storage_url'] = endpoint['publicURL']
             params['token'] = context.auth_token
         else:

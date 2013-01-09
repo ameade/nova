@@ -58,6 +58,16 @@ class TestSwiftStore(test.TestCase):
         actual = self.store.get_image_url(image_id)
         self.assertEqual(actual, expected)
 
+    def test_get_image_url_multitenant(self):
+        self.flags(swift_store_multitenant=True)
+        self.store.store_url = 'http://localhost:8080/v2.0'
+
+        image_id = str(uuid.uuid4())
+        expected = ("swift+http://localhost:8080/"
+                    "v2.0/the_container/%s" % image_id)
+        actual = self.store.get_image_url(image_id)
+        self.assertEqual(actual, expected)
+
     def test_upload_vhd_single_tenant(self):
         self.flags(swift_store_multitenant=False)
 
