@@ -79,9 +79,6 @@ class SwiftStore(object):
                               glance.get_default_image_service())
         self.store_url = None
 
-    def __repr__(self):
-        return "swift"
-
     def get_image_url(self, image_id):
         """
         Creates location uri for the specified image.
