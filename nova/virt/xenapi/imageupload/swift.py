@@ -112,7 +112,10 @@ class SwiftStore(object):
         return ''
 
     def upload_image(self, context, session, instance, vdi_uuids, image_id):
-        """
+        """ Uploads the image data to swift.
+
+        Uploads the image data to swift and updates the image metadata in
+        glance. If any errors occur in the upload process then the image is deleted.
         """
         try:
             image_metadata = self.upload_vhd(context,
