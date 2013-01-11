@@ -72,7 +72,10 @@ CONF = cfg.CONF
 CONF.register_opts(swift_opts)
 
 
-class SwiftStore(object):
+class Store(object):
+    """Driver for uploading image data directly to Swift and
+    updating image metadata in Glance.
+    """
 
     def __init__(self, image_service=None):
         self.image_service = (image_service or

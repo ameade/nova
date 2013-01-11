@@ -22,25 +22,25 @@ import uuid
 from nova import context
 from nova.openstack.common import cfg
 from nova import test
-from nova.virt.xenapi.imageupload import swift
+import nova.virt.xenapi.imageupload.glance_with_swift_bypass as swift
 from nova.virt.xenapi import vm_utils
 
 
 CONF = cfg.CONF
 
 
-class TestSwiftStore(test.TestCase):
+class TestStore(test.TestCase):
     def setUp(self):
-        super(TestSwiftStore, self).setUp()
+        super(TestStore, self).setUp()
         self.mox = mox.Mox()
         self.image_service = self.mox.CreateMockAnything()
-        self.store = swift.SwiftStore(image_service=self.image_service)
+        self.store = swift.Store(image_service=self.image_service)
         self.flags(swift_store_user="user")
         self.flags(swift_store_key="password")
         self.flags(swift_store_container="the_container")
 
     def tearDown(self):
-        super(TestSwiftStore, self).tearDown()
+        super(TestStore, self).tearDown()
 
     def test_get_image_url_http(self):
         self.flags(swift_store_auth_address="http://localhost:5000/v2.0/")
@@ -71,18 +71,23 @@ class TestSwiftStore(test.TestCase):
     def test_upload_vhd_single_tenant(self):
         self.flags(swift_store_multitenant=False)
 
+        sr_path = 'fake_sr_path'
+
         def fake_get_sr_path(*_args, **_kwargs):
-            return None
+            return sr_path
 
         self.stubs.Set(vm_utils, 'get_sr_path', fake_get_sr_path)
 
+        image_id = 'fake_image_uuid'
+        vdi_uuids = ['fake_vdi_uuid']
+        ctx = None
         large_object_size = CONF.swift_store_large_object_size
         large_chunk_size = CONF.swift_store_large_object_chunk_size
         create_container = CONF.swift_store_create_container_on_put
 
-        params = {'vdi_uuids': None,
-                  'image_id': None,
-                  'sr_path': None,
+        params = {'vdi_uuids': vdi_uuids,
+                  'image_id': image_id,
+                  'sr_path': sr_path,
                   'swift_enable_snet': CONF.swift_enable_snet,
                   'swift_store_auth_version': CONF.swift_store_auth_version,
                   'swift_store_container': CONF.swift_store_container,
@@ -98,26 +103,30 @@ class TestSwiftStore(test.TestCase):
         session.call_plugin_serialized('swift', 'upload_vhd', **params)
         self.mox.ReplayAll()
 
-        self.store.upload_vhd(None, session, None, None, None)
+        self.store.upload_vhd(ctx, session, {}, vdi_uuids, image_id)
 
         self.mox.VerifyAll()
 
     def test_upload_vhd_multitenant(self):
         self.flags(swift_store_multitenant=True)
 
+        sr_path = 'fake_sr_path'
+
         def fake_get_sr_path(*_args, **_kwargs):
-            return None
+            return sr_path
 
         self.stubs.Set(vm_utils, 'get_sr_path', fake_get_sr_path)
 
+        image_id = 'fake_image_uuid'
+        vdi_uuids = ['fake_vdi_uuid']
         ctx = context.RequestContext('user', 'project', auth_token='foobar')
         large_object_size = CONF.swift_store_large_object_size
         large_chunk_size = CONF.swift_store_large_object_chunk_size
         create_container = CONF.swift_store_create_container_on_put
 
-        params = {'vdi_uuids': None,
-                  'image_id': None,
-                  'sr_path': None,
+        params = {'vdi_uuids': vdi_uuids,
+                  'image_id': image_id,
+                  'sr_path': sr_path,
                   'swift_enable_snet': CONF.swift_enable_snet,
                   'swift_store_auth_version': CONF.swift_store_auth_version,
                   'swift_store_container': CONF.swift_store_container,
@@ -132,28 +141,37 @@ class TestSwiftStore(test.TestCase):
         session.call_plugin_serialized('swift', 'upload_vhd', **params)
         self.mox.ReplayAll()
 
-        self.store.upload_vhd(ctx, session, None, None, None)
+        self.store.upload_vhd(ctx, session, {}, vdi_uuids, image_id)
 
         self.mox.VerifyAll()
 
     def test_upload_image(self):
 
+        image_id = 'fake_image_uuid'
+        image_meta = {'etag': 'ae83dbf9987e',
+                      'image_size': '3',
+                      'disk_format': 'vhd',
+                      'container_format': 'ovf'}
+
         def fake_upload_vhd(*_args, **_kwargs):
-            image_meta = {'etag': 'ae83dbf9987e',
-                          'image_size': '3',
-                          'disk_format': 'vhd',
-                          'container_format': 'ovf'}
             return image_meta
 
         self.stubs.Set(self.store, 'upload_vhd', fake_upload_vhd)
         ctx = context.RequestContext('user', 'project', auth_token='foobar')
 
-        self.image_service.update(ctx, mox.IgnoreArg(), mox.IgnoreArg(),
+        session = None
+        vdi_uuids = None
+        expected_image_meta = {'checksum': 'ae83dbf9987e',
+                               'size': '3',
+                               'location': self.store.get_image_url(image_id),
+                               'disk_format': 'vhd',
+                               'container_format': 'ovf'}
+        self.image_service.update(ctx, image_id, expected_image_meta,
                                   purge_props=False)
 
         self.mox.ReplayAll()
 
-        self.store.upload_image(ctx, None, None, None, None)
+        self.store.upload_image(ctx, session, {}, vdi_uuids, image_id)
         self.mox.VerifyAll()
 
     def test_upload_image_error(self):
@@ -164,9 +182,12 @@ class TestSwiftStore(test.TestCase):
         self.stubs.Set(self.store, 'upload_vhd', fake_upload_vhd)
         ctx = context.RequestContext('user', 'project', auth_token='foobar')
 
-        self.image_service.delete(ctx, mox.IgnoreArg())
+        image_id = 'fake_image_uuid'
+        session = None
+        vdi_uuids = None
+        self.image_service.delete(ctx, image_id)
 
         self.mox.ReplayAll()
 
-        self.store.upload_image(ctx, None, None, None, None)
+        self.store.upload_image(ctx, session, {}, vdi_uuids, image_id)
         self.mox.VerifyAll()

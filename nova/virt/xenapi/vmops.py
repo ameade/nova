@@ -60,7 +60,7 @@ xenapi_vmops_opts = [
     cfg.StrOpt('xenapi_vif_driver',
                default='nova.virt.xenapi.vif.XenAPIBridgeDriver',
                help='The XenAPI VIF driver using XenServer Network APIs.'),
-    cfg.StrOpt('image_upload_handler',
+    cfg.StrOpt('xenapi_image_upload_handler',
                 default='nova.virt.xenapi.imageupload.glance.GlanceStore',
                 help='Object Store Driver used to handle image uploads.'),
     ]
@@ -151,7 +151,7 @@ class VMOps(object):
     """
     Management class for VM-related tasks
     """
-    def __init__(self, session, virtapi):
+    def __init__(self, session, virtapi, image_upload_handler=None):
         self.compute_api = compute.API()
         self._session = session
         self._virtapi = virtapi
@@ -163,6 +163,13 @@ class VMOps(object):
         vif_impl = importutils.import_class(CONF.xenapi_vif_driver)
         self.vif_driver = vif_impl(xenapi_session=self._session)
         self.default_root_dev = '/dev/sda'
+        self.image_upload_handler = image_upload_handler
+
+        if not self.image_upload_handler:
+            msg = _("Importing image upload handler: %s")
+            LOG.debug(msg % CONF.xenapi_image_upload_handler)
+            self.image_upload_handler = importutils.import_object(
+                                    CONF.xenapi_image_upload_handler)
 
     @property
     def agent_enabled(self):
@@ -667,24 +674,23 @@ class VMOps(object):
         3. Push-to-data-store: Once coalesced, we call a plugin on the
            XenServer that will bundle the VHDs together and then push the
            bundle. Depending on the configured value of
-           'image_upload_handler', image data may be pushed to Glance or
-           the specified data store.
+           'xenapi_image_upload_handler', image data may be pushed to
+           Glance or the specified data store.
 
         """
         vm_ref = self._get_vm_opaque_ref(instance)
         label = "%s-snapshot" % instance['name']
-
-        msg = _("Importing image upload handler: %s")
-        LOG.debug(msg % CONF.image_upload_handler)
-        image_handler = importutils.import_object(CONF.image_upload_handler)
 
         with vm_utils.snapshot_attached_here(
                 self._session, instance, vm_ref, label,
                 update_task_state) as vdi_uuids:
             update_task_state(task_state=task_states.IMAGE_UPLOADING,
                               expected_state=task_states.IMAGE_PENDING_UPLOAD)
-            image_handler.upload_image(context, self._session, instance,
-                                       vdi_uuids, image_id)
+            self.image_upload_handler.upload_image(context,
+                                                   self._session,
+                                                   instance,
+                                                   vdi_uuids,
+                                                   image_id)
 
         LOG.debug(_("Finished snapshot and upload for VM"),
                   instance=instance)

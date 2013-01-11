@@ -45,11 +45,13 @@ class TestGlanceStore(test.TestCase):
             'auto_disk_config': True,
             'os_type': 'default',
         }
+        image_id = 'fake_image_uuid'
+        vdi_uuids = ['fake_vdi_uuid']
         instance = {'uuid': 'blah'}
         instance.update(properties)
 
-        params = {'vdi_uuids': None,
-                  'image_id': None,
+        params = {'vdi_uuids': vdi_uuids,
+                  'image_id': image_id,
                   'glance_host': mox.IgnoreArg(),
                   'glance_port': mox.IgnoreArg(),
                   'glance_use_ssl': mox.IgnoreArg(),
@@ -60,6 +62,6 @@ class TestGlanceStore(test.TestCase):
         session.call_plugin_serialized('glance', 'upload_vhd', **params)
         self.mox.ReplayAll()
 
-        self.store.upload_image(ctx, session, instance, None, None)
+        self.store.upload_image(ctx, session, instance, vdi_uuids, image_id)
 
         self.mox.VerifyAll()

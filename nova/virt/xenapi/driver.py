@@ -123,7 +123,7 @@ CONF.import_opt('host', 'nova.netconf')
 class XenAPIDriver(driver.ComputeDriver):
     """A connection to XenServer or Xen Cloud Platform."""
 
-    def __init__(self, virtapi, read_only=False):
+    def __init__(self, virtapi, read_only=False, image_upload_handler=None):
         super(XenAPIDriver, self).__init__(virtapi)
 
         url = CONF.xenapi_connection_url
@@ -139,7 +139,8 @@ class XenAPIDriver(driver.ComputeDriver):
         self._volumeops = volumeops.VolumeOps(self._session)
         self._host_state = None
         self._host = host.Host(self._session, self.virtapi)
-        self._vmops = vmops.VMOps(self._session, self.virtapi)
+        self._vmops = vmops.VMOps(self._session, self.virtapi,
+                                  image_upload_handler)
         self._initiator = None
         self._hypervisor_hostname = None
         self._pool = pool.ResourcePool(self._session, self.virtapi)

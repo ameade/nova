@@ -104,6 +104,11 @@ IMAGE_FIXTURES = {
 }
 
 
+class FakeImageHandler():
+    def upload_image(*_args, **_kwargs):
+        pass
+
+
 def set_image_fixtures():
     image_service = fake_image.FakeImageService()
     image_service.images.clear()
@@ -317,7 +322,8 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
         self.user_id = 'fake'
         self.project_id = 'fake'
         self.context = context.RequestContext(self.user_id, self.project_id)
-        self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
+        self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False,
+                                 image_upload_handler=FakeImageHandler())
 
         fake_image.stub_out_image_service(self.stubs)
         set_image_fixtures()
@@ -437,6 +443,13 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
         # Stubbing out firewall driver as previous stub sets alters
         # xml rpc result parsing
         stubs.stubout_firewall_driver(self.stubs, self.conn)
+
+        self.fake_upload_called = False
+
+        def fake_upload_image(*_args, **_kwargs):
+            self.fake_upload_called = True
+        self.stubs.Set(FakeImageHandler, 'upload_image',
+                       fake_upload_image)
         instance = self._create_instance()
 
         image_id = "my_snapshot_id"
@@ -468,6 +481,8 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
             vdi_rec = xenapi_fake.get_record('VDI', vdi_ref)
             name_label = vdi_rec["name_label"]
             self.assert_(not name_label.endswith('snapshot'))
+
+        self.assertTrue(self.fake_upload_called)
 
     def create_vm_record(self, conn, os_type, name):
         instances = conn.list_instances()
