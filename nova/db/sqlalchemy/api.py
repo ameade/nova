@@ -3805,6 +3805,7 @@ def instance_system_metadata_get(context, instance_uuid, session=None):
 @require_context
 def instance_system_metadata_update(context, instance_uuid, metadata, delete,
                                     session=None):
+    print metadata
     all_keys = metadata.keys()
     synchronize_session = "fetch"
     if session is None:
